@@ -26,3 +26,5 @@ credentials*
 # Personal memories and settings (if CHATBOX_DATA points here)
 memories.json
 settings.json
+chats/
+plans/

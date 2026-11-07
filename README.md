@@ -2,7 +2,7 @@
 
 One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux — using the subscriptions you already pay for. No API keys.
 
-Pick an assistant with a button, chat, switch to another one mid-conversation. Each keeps its own conversation.
+A clean, modern chat window: sidebar with your saved chats, a centered conversation with proper formatting (headings, lists, tables, code with a Copy button), and one composer where you pick the assistant, mode, model and folder. Switch assistants mid-conversation — each keeps its own part of the chat.
 
 ## How it works
 
@@ -23,7 +23,8 @@ Usage counts toward each service's plan, exactly as if you used its own app.
 
 ## Features
 
-- **Four assistants**, one window. Switching keeps each conversation.
+- **Four assistants**, one window. Assistants that aren't connected are greyed out until you sign in.
+- **Chat history** – every chat is saved and listed in the sidebar (Today, Yesterday, …). Reopen one and keep going: each assistant resumes its own session, in the chat's own folder.
 - **Ask / Plan / Agent** – *Ask* answers and may read files. *Plan* writes an implementation plan and saves it as a Markdown file (`<folder>/plans/…md`) for you to review — nothing is changed yet. Click **Implement plan** to hand it to *Agent*, which edits files and runs commands and ticks off the plan's checklist as it goes.
 - **Model picker** – *Auto*, or any model your plan offers (Cursor's list is loaded live).
 - **Shared memory** – save facts once ("I use Unity 6 and C#", "answer in Russian") and every assistant gets them at the start of each chat. Add them in **Settings**, type `/remember …`, click **Remember** under any message, or let the assistant save new facts by itself (with **Undo**).
@@ -81,13 +82,15 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 - In **Agent** mode the assistant can change files in the chosen folder — use it on folders you trust.
 - ChatGPT mode always runs read-only from an empty folder.
 - With Obsidian connected, notes that match your message are sent to the assistant you are chatting with (turn off in **Settings**). Chatbox only writes inside `Chatbox/` in your vault, plus `plans/` in the project folder you choose.
+- Chats are saved locally in `~/.local/share/chatbox/chats/` (one JSON file each). Delete them from the sidebar.
 - Memories and custom instructions are stored locally in `~/.local/share/chatbox/memories.json` and `settings.json`. They are sent only to the assistant you are chatting with, at the start of a chat (or when they change). Turn this off in **Settings**.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `chatbox.py` | Local server and the chat page |
+| `chatbox.py` | Local server: chat, history, settings and account APIs |
+| `ui.html` | The interface (single page, no external files) |
 | `accounts.py` | Status, install, sign-in and sign-out for each tool |
 | `memory.py` | Settings, memories and custom instructions |
 | `vault.py` | Obsidian vault: detection, memory note, note search, saving chats |

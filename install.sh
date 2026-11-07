@@ -27,7 +27,7 @@ command -v python3 >/dev/null || { echo "Python 3 is required." >&2; exit 1; }
 
 echo "Installing Chatbox to $D"
 mkdir -p "$D"
-cp "$SRC"/chatbox.py "$SRC"/accounts.py "$SRC"/memory.py "$SRC"/vault.py "$SRC"/app.py "$SRC"/chatbox.svg "$D"/
+cp "$SRC"/chatbox.py "$SRC"/accounts.py "$SRC"/memory.py "$SRC"/vault.py "$SRC"/ui.html "$SRC"/app.py "$SRC"/chatbox.svg "$D"/
 
 has_qt() { "$D/venv/bin/python" -c "import PyQt6.QtWebEngineWidgets" 2>/dev/null; }
 
@@ -100,4 +100,4 @@ command -v update-desktop-database >/dev/null && update-desktop-database "$APPS"
 command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 >/dev/null 2>&1 || true
 
 echo "Done ($MODE mode). Open \"Chatbox\" from your app menu, or run: $D/run.sh"
-echo "On first start, use Accounts (top right) to install the tools and sign in."
+echo "On first start, use Accounts (bottom left) to install the tools and sign in."
