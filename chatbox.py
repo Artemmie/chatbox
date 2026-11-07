@@ -17,6 +17,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts
+import memory
 
 HOME = os.path.expanduser("~")
 TIMEOUT = 600  # seconds per reply
@@ -232,6 +233,31 @@ def list_models(backend):
 
 
 ACCOUNTS = accounts.Accounts(find)
+MEMORY = memory.Store(DATA_DIR)
+
+
+def chat(req):
+    """One chat turn with saved memories: send them when a chat starts (or after they
+    change), and save any REMEMBER: lines the assistant adds."""
+    session_id, message = req.get("session_id"), req.get("message", "")
+    version = MEMORY.version()
+    context = MEMORY.context() if (not session_id or req.get("context_version") != version) else ""
+    if context:
+        message = context + ("The user's message:\n" if not session_id
+                             else "(Context updated.) The user's message:\n") + message
+    result = run_turn(req.get("backend"), message, session_id, req.get("mode", "ask"),
+                      (req.get("model") or "").strip(), req.get("workdir"))
+    if result.get("reply") is not None:
+        result["reply"], result["saved_memories"] = MEMORY.take_memories(result["reply"])
+        result["context_version"] = MEMORY.version()  # the assistant already knows what it saved
+    else:
+        result["context_version"] = req.get("context_version")
+    return result
+
+
+def settings_payload():
+    return {"settings": MEMORY.settings(), "memories": MEMORY.memories(),
+            "path": MEMORY.memories_path}
 
 
 def status():
@@ -270,6 +296,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(status()))
         if self.path.startswith("/api/models?backend="):
             return self._send(200, json.dumps(list_models(self.path.split("=", 1)[1])))
+        if self.path == "/api/settings":
+            return self._send(200, json.dumps(settings_payload()))
         if self.path.startswith("/api/accounts"):
             return self._send(200, json.dumps(ACCOUNTS.status(fresh="fresh=1" in self.path)))
         self._send(404, '{"error":"not found"}')
@@ -290,6 +318,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True}))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e)}))
+        if self.path in ("/api/settings", "/api/memory"):
+            try:
+                if self.path == "/api/settings":
+                    MEMORY.update_settings(req.get("settings"))
+                else:
+                    act = req.get("action")
+                    if act == "add":
+                        item = MEMORY.add(req.get("text", ""))
+                        if item is None:
+                            raise ValueError("That is already in memory.")
+                    elif act == "edit":
+                        MEMORY.edit(req.get("id"), req.get("text", ""))
+                    elif act == "delete":
+                        MEMORY.delete(req.get("id"))
+                    elif act == "clear":
+                        MEMORY.clear()
+                    else:
+                        raise ValueError("Unknown action")
+                return self._send(200, json.dumps(settings_payload()))
+            except Exception as e:
+                return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
         if self.path == "/api/open":
             try:
                 accounts.open_url(req.get("url", ""))
@@ -299,9 +348,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/api/chat":
             return self._send(404, '{"error":"not found"}')
         try:
-            result = run_turn(req.get("backend"), req.get("message", ""), req.get("session_id"),
-                              req.get("mode", "ask"), (req.get("model") or "").strip(),
-                              req.get("workdir"))
+            result = chat(req)
         except Exception as e:  # report any failure to the page
             result = {"error": str(e)}
         self._send(200, json.dumps(result))
@@ -367,6 +414,15 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 .job{background:var(--bg);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px;font-size:14px}
 .job pre{margin:0;max-height:140px;overflow:auto;font-size:12px;white-space:pre-wrap}
 .job input{flex:1;min-width:200px}
+.chk{display:flex;gap:8px;align-items:flex-start;font-size:14px;cursor:pointer}.chk input{margin-top:4px}
+#memadd input{flex:1;min-width:200px}
+#memlist{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto}
+.mem{display:flex;gap:6px;align-items:center}.mem input{flex:1}.mem .src{font-size:11px;color:var(--muted);white-space:nowrap}
+.mem button{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:16px;padding:2px 6px}.mem button:hover{color:var(--err)}
+#instructions{width:100%;resize:vertical}
+.msg .rem{display:block;margin-top:6px;border:0;background:transparent;color:var(--muted);font:12px system-ui,sans-serif;cursor:pointer;padding:0;opacity:0;transition:opacity .15s}
+.msg:hover .rem,.msg .rem.done{opacity:1}.msg .rem:hover{color:var(--text)}
+.memnote{color:var(--muted);text-align:center;font-size:13px}.memnote button{border:0;background:transparent;color:var(--text);text-decoration:underline;cursor:pointer;font:inherit}
 </style></head><body>
 <header>
   <h1>Chatbox</h1>
@@ -379,8 +435,30 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   <select id="model" title="Model"><option value="">Auto</option></select>
   <input id="workdir" class="grow" placeholder="Folder" title="Folder the assistant works in">
   <button class="ghost" id="newchat">New chat</button>
+  <button class="ghost" id="setbtn" title="Memory and custom instructions">Settings</button>
   <button class="ghost" id="accbtn" title="Install, sign in or sign out">Accounts</button>
 </header>
+<dialog id="set">
+  <div class="dlg-h"><h2>Settings</h2><button class="ghost" id="setclose">Close</button></div>
+  <div class="dlg-b">
+    <section class="acc">
+      <b>Memory</b>
+      <div class="muted">Saved memories are shared with Cursor, Claude, Codex and ChatGPT. Chatbox sends them at the start of each chat.</div>
+      <label class="chk"><input type="checkbox" id="use_memory"> Use memories and custom instructions in chats</label>
+      <label class="chk"><input type="checkbox" id="auto_memory"> Let assistants save new memories when you tell them something worth keeping</label>
+      <form class="row" id="memadd"><input id="memtext" placeholder="Add a memory, e.g. “I use Unity 6 and C#”" maxlength="500"><button class="btn">Add</button></form>
+      <div id="memlist"></div>
+      <div class="row" style="justify-content:space-between"><span class="muted" id="mempath"></span><button class="ghost" id="memclear">Delete all</button></div>
+    </section>
+    <section class="acc">
+      <b>Custom instructions</b>
+      <div class="muted">What every assistant should know about you, or how it should reply.</div>
+      <textarea id="instructions" rows="4" maxlength="4000" placeholder="e.g. Reply in Russian. Keep answers short. Explain code step by step."></textarea>
+      <div class="row"><button class="btn" id="instsave">Save</button><span class="muted" id="instmsg"></span></div>
+    </section>
+    <p class="muted" style="margin:0">Tip: type <code>/remember</code> followed by text in the message box to save a memory, or use “Remember” under any message.</p>
+  </div>
+</dialog>
 <dialog id="acc">
   <div class="dlg-h"><h2>Accounts</h2><button class="ghost" id="accclose">Close</button></div>
   <div class="dlg-b">
@@ -397,7 +475,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 const $=s=>document.querySelector(s), log=$('#log');
 const NAMES={cursor:'Cursor',claude:'Claude',codex:'Codex',chatgpt:'ChatGPT'},BACKENDS=Object.keys(NAMES);
 const fresh=()=>({cursor:null,claude:null,codex:null,chatgpt:null});
-const S={backend:'cursor',mode:'ask',sessions:fresh(),busy:false};
+const S={backend:'cursor',mode:'ask',sessions:fresh(),ctx:fresh(),busy:false};
 const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
 S.backend=store.get('backend')||'cursor';S.mode=store.get('mode')||'ask';
 const modelCache={};
@@ -418,6 +496,15 @@ function fmt(t){ // code blocks + inline code only
 function add(cls,who,html){const d=document.createElement('div');d.className='msg '+cls;
   d.innerHTML=(who?'<div class="who">'+who+'</div>':'')+html;log.appendChild(d);
   $('main').scrollTop=1e9;return d;}
+function rememberBtn(d,text){ // small "Remember" link under a message
+  const b=document.createElement('button');b.className='rem';b.type='button';b.textContent='Remember';
+  b.title='Save this message to memory (shared with all assistants)';
+  b.onclick=async()=>{const r=await post('/api/memory',{action:'add',text:text.slice(0,500)});
+    b.textContent=r.error?r.error:'Saved to memory ✓';b.classList.add('done');b.disabled=true;};
+  d.appendChild(b);}
+function memNote(m){ // "Saved to memory: … · Undo"
+  const d=add('memnote','','🧠 Saved to memory: '+esc(m.text)+' · <button type="button">Undo</button>');
+  d.querySelector('button').onclick=async()=>{await post('/api/memory',{action:'delete',id:m.id});d.textContent='Memory removed';};}
 function paint(){
   document.querySelectorAll('#backend button').forEach(b=>b.classList.toggle('on',b.dataset.b===S.backend));
   const chat=S.backend==='chatgpt'; // plain chat: no folder, always read-only
@@ -434,20 +521,47 @@ $('#workdir').onchange=e=>{store.set('workdir',e.target.value);S.sessions=fresh(
 $('#newchat').onclick=()=>{S.sessions=fresh();log.innerHTML='';add('note','','New chat');};
 $('#msg').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('#f').requestSubmit();}};
 $('#f').onsubmit=async e=>{e.preventDefault();const text=$('#msg').value.trim();if(!text||S.busy)return;
+  const rm=text.match(/^\/remember\s+([\s\S]+)/i);
+  if(rm){$('#msg').value='';const r=await post('/api/memory',{action:'add',text:rm[1]});
+    if(r.error)add('note','',esc(r.error));else memNote(r.memories[r.memories.length-1]);return;}
   const b=S.backend,name=NAMES[b];
-  $('#msg').value='';add('you','You',esc(text));
+  $('#msg').value='';rememberBtn(add('you','You',esc(text)),text);
   const pending=add('bot '+b,name,'<span class="note">Thinking…</span>');
   S.busy=true;$('#send').disabled=true;const t0=Date.now();
   const tick=setInterval(()=>{pending.querySelector('.note').textContent='Thinking… '+Math.round((Date.now()-t0)/1000)+'s'},1000);
   try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({backend:b,message:text,session_id:S.sessions[b],mode:S.mode,
+      body:JSON.stringify({backend:b,message:text,session_id:S.sessions[b],mode:S.mode,context_version:S.ctx[b],
         model:$('#model').value,workdir:$('#workdir').value})}).then(r=>r.json());
     if(r.session_id)S.sessions[b]=r.session_id;
+    if(r.context_version!==undefined)S.ctx[b]=r.context_version;
     pending.innerHTML='<div class="who">'+name+'</div>'+(r.error?'<span class="err">'+esc(r.error)+'</span>'
       +(/Open Accounts/.test(r.error)?'<div class="row" style="margin-top:8px"><button class="btn" onclick="openAccounts()">Open Accounts</button></div>':'')
       :fmt(r.reply||'(empty reply)'));
+    if(r.reply)rememberBtn(pending,r.reply);
+    (r.saved_memories||[]).forEach(memNote);
   }catch(err){pending.innerHTML='<div class="who">'+name+'</div><span class="err">'+esc(String(err))+'</span>';}
   clearInterval(tick);S.busy=false;$('#send').disabled=false;$('#msg').focus();$('main').scrollTop=1e9;};
+// ---- Settings & memory ----
+function renderSettings(p){
+  $('#use_memory').checked=p.settings.use_memory;$('#auto_memory').checked=p.settings.auto_memory;
+  if(document.activeElement!==$('#instructions'))$('#instructions').value=p.settings.instructions||'';
+  $('#mempath').textContent=p.memories.length+' saved · stored in '+p.path;
+  $('#memclear').disabled=!p.memories.length;
+  $('#memlist').innerHTML=p.memories.length?p.memories.map(m=>'<div class="mem" data-id="'+m.id+'"><input value="'+esc(m.text).replace(/"/g,'&quot;')+'" maxlength="500"><span class="src">'+(m.source==='assistant'?'by assistant':'by you')+' · '+esc(m.created||'')+'</span><button type="button" title="Delete">×</button></div>').join('')
+    :'<div class="muted">No memories yet.</div>';}
+async function memAct(body){const r=await post(body.settings?'/api/settings':'/api/memory',body);if(r.error)alert(r.error);renderSettings(r);return r;}
+$('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch('/api/settings').then(r=>r.json()));};
+$('#setclose').onclick=()=>$('#set').close();
+$('#use_memory').onchange=e=>memAct({settings:{use_memory:e.target.checked}});
+$('#auto_memory').onchange=e=>memAct({settings:{auto_memory:e.target.checked}});
+$('#instsave').onclick=async()=>{await memAct({settings:{instructions:$('#instructions').value}});
+  $('#instmsg').textContent='Saved. New chats will use it.';setTimeout(()=>$('#instmsg').textContent='',3000);};
+$('#memadd').onsubmit=async e=>{e.preventDefault();const t=$('#memtext').value.trim();if(!t)return;
+  const r=await memAct({action:'add',text:t});if(!r.error)$('#memtext').value='';};
+$('#memlist').addEventListener('change',e=>{const row=e.target.closest('.mem');if(row)memAct({action:'edit',id:row.dataset.id,text:e.target.value});});
+$('#memlist').addEventListener('click',e=>{const row=e.target.closest('.mem');if(row&&e.target.tagName==='BUTTON')memAct({action:'delete',id:row.dataset.id});});
+$('#memclear').onclick=()=>{if(confirm('Delete all memories? This cannot be undone.'))memAct({action:'clear'});};
+
 // ---- Accounts ----
 const SVC={cursor:'cursor',claude:'claude',codex:'codex',chatgpt:'codex'};
 let ACC={},accJSON='',accTimer=null;const codes={};

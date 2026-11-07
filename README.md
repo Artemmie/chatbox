@@ -26,6 +26,8 @@ Usage counts toward each service's plan, exactly as if you used its own app.
 - **Four assistants**, one window. Switching keeps each conversation.
 - **Ask / Agent mode** – Ask is read-only. Agent lets Cursor, Claude or Codex edit files and run commands in the folder you choose.
 - **Model picker** – *Auto*, or any model your plan offers (Cursor's list is loaded live).
+- **Shared memory** – save facts once ("I use Unity 6 and C#", "answer in Russian") and every assistant gets them at the start of each chat. Add them in **Settings**, type `/remember …`, click **Remember** under any message, or let the assistant save new facts by itself (with **Undo**).
+- **Custom instructions** – one place to tell all four assistants how to reply.
 - **Accounts screen** – see what's connected and **Install / Sign in / Sign out** each service without a terminal. Sign-in happens in your browser; Chatbox never sees your password.
 - **Desktop app** – menu entry, icon and its own window.
 
@@ -77,6 +79,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 - Chatbox stores no passwords, tokens or API keys. Each tool keeps its own sign-in in its usual place.
 - In **Agent** mode the assistant can change files in the chosen folder — use it on folders you trust.
 - ChatGPT mode always runs read-only from an empty folder.
+- Memories and custom instructions are stored locally in `~/.local/share/chatbox/memories.json` and `settings.json`. They are sent only to the assistant you are chatting with, at the start of a chat (or when they change). Turn this off in **Settings**.
 
 ## Files
 
@@ -84,6 +87,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 |---|---|
 | `chatbox.py` | Local server and the chat page |
 | `accounts.py` | Status, install, sign-in and sign-out for each tool |
+| `memory.py` | Settings, memories and custom instructions |
 | `app.py` | Desktop window (PyQt6 WebEngine) |
 | `install.sh` / `uninstall.sh` | Per-user install, no root needed |
 
