@@ -10,14 +10,17 @@ Usage:  python3 chatbox.py [--port 8765] [--no-browser]
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts
 import memory
+import vault as vaultmod
 
 HOME = os.path.expanduser("~")
 TIMEOUT = 600  # seconds per reply
@@ -58,7 +61,7 @@ def build_codex_command(message, session_id, mode, model, chat=False):
     exe = find("codex")
     if not exe:
         raise RuntimeError("Codex (from the ChatGPT app) is not installed.")
-    sandbox = "read-only" if mode == "ask" or chat else "workspace-write"
+    sandbox = "workspace-write" if mode == "agent" and not chat else "read-only"
     cmd = [exe, "exec"] + (["resume"] if session_id else [])
     # The ChatGPT app's older Codex needs an explicit model; a standalone one picks its own.
     model = model or (CODEX_DEFAULT_MODEL if CODEX_APP_PATH and exe == CODEX_APP_PATH else "")
@@ -107,19 +110,18 @@ def build_command(backend, message, session_id, mode, model):
         if not exe:
             raise RuntimeError("cursor-agent is not installed.")
         cmd = [exe, "-p", "--trust", "--output-format", "json"]
-        if mode == "ask":
-            cmd += ["--mode", "ask"]
-        else:
+        if mode == "agent":
             cmd += ["--force"]
+        else:
+            cmd += ["--mode", "plan" if mode == "plan" else "ask"]
     elif backend == "claude":
         exe = find("claude")
         if not exe:
             raise RuntimeError("claude is not installed.")
         cmd = [exe, "-p", "--output-format", "json"]
-        if mode == "ask":
-            cmd += ["--permission-mode", "plan"]
-        else:
-            cmd += ["--permission-mode", "acceptEdits"]
+        # Ask/Plan: may read files, anything needing permission is refused.
+        # Agent: "auto" = edits plus commands that Claude's safety check approves.
+        cmd += ["--permission-mode", "auto" if mode == "agent" else "dontAsk"]
     else:
         raise RuntimeError(f"Unknown backend: {backend}")
     if model:
@@ -236,12 +238,55 @@ ACCOUNTS = accounts.Accounts(find)
 MEMORY = memory.Store(DATA_DIR)
 
 
+PLAN_PROMPT = (
+    "[Chatbox PLAN mode] Do not create, edit or delete any files and do not run commands that "
+    "change anything. You may read files to understand the project. Reply with a complete "
+    "implementation plan in Markdown: start with a '# <short title>' heading, then sections "
+    "'## Goal', '## Steps' (a '- [ ]' checklist that names the files to touch) and "
+    "'## Risks and questions'. Chatbox will save your reply as a .md plan file for the user to "
+    "review before anything is built.\n\n")
+PLAN_FILES = set()  # plan files Chatbox wrote this run (the page may open these)
+
+
+def save_plan(reply, backend, workdir):
+    """Save a plan reply as Markdown. Folder-based assistants: <folder>/plans/.
+    ChatGPT (no folder): the Obsidian vault's Chatbox/Plans, else Chatbox's data folder."""
+    m = re.search(r"^#\s+(.+)$", reply, re.MULTILINE)
+    title = re.sub(r"[\\/:*?\"<>|#`\n\r\t]+", " ", m.group(1) if m else "Plan").strip()[:60] or "Plan"
+    if backend == "chatgpt":
+        v = MEMORY.vault()
+        folder = os.path.join(v.path, "Chatbox", "Plans") if v else os.path.join(DATA_DIR, "plans")
+    else:
+        folder = os.path.join(os.path.expanduser(workdir or HOME), "plans")
+    os.makedirs(folder, exist_ok=True)
+    title = re.sub(r"\.md$", "", title, flags=re.I).strip() or "Plan"
+    path = os.path.join(folder, time.strftime("%Y-%m-%d %H%M ") + title + ".md")
+    body = reply.strip() + "\n"
+    if not body.startswith("#"):
+        body = f"# {title}\n\n" + body
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body)
+    PLAN_FILES.add(path)
+    return path
+
+
 def chat(req):
     """One chat turn with saved memories: send them when a chat starts (or after they
     change), and save any REMEMBER: lines the assistant adds."""
     session_id, message = req.get("session_id"), req.get("message", "")
     version = MEMORY.version()
     context = MEMORY.context() if (not session_id or req.get("context_version") != version) else ""
+    notes = []
+    v = MEMORY.vault()
+    if v and MEMORY.settings()["use_memory"] and MEMORY.settings()["vault_search"]:
+        notes = v.search(req.get("message", ""), exclude=set(req.get("sent_notes") or []))
+        if notes:
+            context += ("[Notes from the user's Obsidian vault (their long-term memory) that may "
+                        "relate to this message. Use them if helpful.]\n\n"
+                        + "\n\n".join(f"### {n['path']}\n{n['text']}" for n in notes)
+                        + "\n\n[End of notes]\n\n")
+    if req.get("mode") == "plan":
+        context += PLAN_PROMPT
     if context:
         message = context + ("The user's message:\n" if not session_id
                              else "(Context updated.) The user's message:\n") + message
@@ -250,14 +295,23 @@ def chat(req):
     if result.get("reply") is not None:
         result["reply"], result["saved_memories"] = MEMORY.take_memories(result["reply"])
         result["context_version"] = MEMORY.version()  # the assistant already knows what it saved
+        result["notes_used"] = [{"path": n["path"], "title": n["title"]} for n in notes]
+        if req.get("mode") == "plan" and result["reply"].strip():
+            try:
+                result["plan_file"] = save_plan(result["reply"], req.get("backend"), req.get("workdir"))
+            except OSError as e:
+                result["plan_error"] = f"Could not save the plan: {e}"
     else:
         result["context_version"] = req.get("context_version")
     return result
 
 
 def settings_payload():
-    return {"settings": MEMORY.settings(), "memories": MEMORY.memories(),
-            "path": MEMORY.memories_path}
+    v = MEMORY.vault()
+    where = (os.path.join(v.path, vaultmod.MEMORY_NOTE) if v and MEMORY.settings()["memory_in_vault"]
+             else MEMORY.memories_path)
+    return {"settings": MEMORY.settings(), "memories": MEMORY.memories(), "path": where,
+            "vault": v.info() if v else None, "detected": vaultmod.detect_vaults()}
 
 
 def status():
@@ -318,9 +372,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True}))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e)}))
-        if self.path in ("/api/settings", "/api/memory"):
+        if self.path in ("/api/settings", "/api/memory", "/api/obsidian"):
             try:
-                if self.path == "/api/settings":
+                if self.path == "/api/obsidian":
+                    act = req.get("action")
+                    if act == "connect":
+                        MEMORY.connect_vault(req.get("path", ""))
+                    elif act == "disconnect":
+                        MEMORY.disconnect_vault()
+                    elif act == "save_chat":
+                        v = MEMORY.vault()
+                        if not v:
+                            raise ValueError("Connect an Obsidian vault first (Accounts).")
+                        rel = v.save_chat(req.get("messages") or [], req.get("backend", ""))
+                        return self._send(200, json.dumps({"saved": rel, **settings_payload()}))
+                    else:
+                        raise ValueError("Unknown action")
+                elif self.path == "/api/settings":
                     MEMORY.update_settings(req.get("settings"))
                 else:
                     act = req.get("action")
@@ -339,6 +407,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(settings_payload()))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+        if self.path == "/api/openfile":
+            path = req.get("path", "")
+            if path not in PLAN_FILES:
+                return self._send(200, '{"error":"Only plan files saved by Chatbox can be opened."}')
+            accounts.open_path(path)
+            return self._send(200, '{"ok":true}')
         if self.path == "/api/open":
             try:
                 accounts.open_url(req.get("url", ""))
@@ -429,12 +503,13 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   <div class="seg" id="backend">
     <button data-b="cursor">Cursor</button><button data-b="claude">Claude</button><button data-b="codex">Codex</button><button data-b="chatgpt">ChatGPT</button>
   </div>
-  <div class="seg" id="mode" title="Ask = read-only. Agent = may edit files and run commands in the folder.">
-    <button data-m="ask">Ask</button><button data-m="agent">Agent</button>
+  <div class="seg" id="mode" title="Ask = answers only. Plan = writes a plan as a .md file first. Agent = may edit files and run commands in the folder.">
+    <button data-m="ask">Ask</button><button data-m="plan">Plan</button><button data-m="agent">Agent</button>
   </div>
   <select id="model" title="Model"><option value="">Auto</option></select>
   <input id="workdir" class="grow" placeholder="Folder" title="Folder the assistant works in">
   <button class="ghost" id="newchat">New chat</button>
+  <button class="ghost" id="savebtn" hidden title="Save this chat as a note in your Obsidian vault">Save to Obsidian</button>
   <button class="ghost" id="setbtn" title="Memory and custom instructions">Settings</button>
   <button class="ghost" id="accbtn" title="Install, sign in or sign out">Accounts</button>
 </header>
@@ -446,6 +521,11 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       <div class="muted">Saved memories are shared with Cursor, Claude, Codex and ChatGPT. Chatbox sends them at the start of each chat.</div>
       <label class="chk"><input type="checkbox" id="use_memory"> Use memories and custom instructions in chats</label>
       <label class="chk"><input type="checkbox" id="auto_memory"> Let assistants save new memories when you tell them something worth keeping</label>
+      <div id="vaultopts">
+        <label class="chk"><input type="checkbox" id="memory_in_vault"> Keep memories in Obsidian (<code>Chatbox/Memories.md</code>), shared by all assistants and editable in Obsidian</label>
+        <label class="chk"><input type="checkbox" id="vault_search"> Give the assistant notes from your vault that relate to your message</label>
+      </div>
+      <div class="muted" id="vaulthint">Tip: connect your Obsidian vault in Accounts to use it as long-term memory.</div>
       <form class="row" id="memadd"><input id="memtext" placeholder="Add a memory, e.g. “I use Unity 6 and C#”" maxlength="500"><button class="btn">Add</button></form>
       <div id="memlist"></div>
       <div class="row" style="justify-content:space-between"><span class="muted" id="mempath"></span><button class="ghost" id="memclear">Delete all</button></div>
@@ -464,6 +544,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   <div class="dlg-b">
     <p class="intro">Chatbox uses your own subscriptions. Install each tool once and sign in. Sign-in happens in your browser; Chatbox never sees your password.</p>
     <div id="acclist"><p class="muted">Checking accounts…</p></div>
+    <div id="obs" class="acc"></div>
   </div>
 </dialog>
 <main><div class="wrap" id="log"></div></main>
@@ -475,7 +556,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 const $=s=>document.querySelector(s), log=$('#log');
 const NAMES={cursor:'Cursor',claude:'Claude',codex:'Codex',chatgpt:'ChatGPT'},BACKENDS=Object.keys(NAMES);
 const fresh=()=>({cursor:null,claude:null,codex:null,chatgpt:null});
-const S={backend:'cursor',mode:'ask',sessions:fresh(),ctx:fresh(),busy:false};
+const S={backend:'cursor',mode:'ask',sessions:fresh(),ctx:fresh(),sent:fresh(),log:[],busy:false};
 const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
 S.backend=store.get('backend')||'cursor';S.mode=store.get('mode')||'ask';
 const modelCache={};
@@ -492,7 +573,8 @@ async function loadModels(){ // refill the dropdown for the current backend
 const esc=t=>t.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function fmt(t){ // code blocks + inline code only
   return t.split(/```/).map((p,i)=>i%2?'<pre><code>'+esc(p.replace(/^[\w-]*\n/,''))+'</code></pre>'
-    :esc(p).replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')).join('');}
+    :esc(p).replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
+      .replace(/^#{1,2} (.+)$/gm,'<b style="font-size:1.1em">$1</b>').replace(/^#{3,6} (.+)$/gm,'<b>$1</b>')).join('');}
 function add(cls,who,html){const d=document.createElement('div');d.className='msg '+cls;
   d.innerHTML=(who?'<div class="who">'+who+'</div>':'')+html;log.appendChild(d);
   $('main').scrollTop=1e9;return d;}
@@ -507,43 +589,51 @@ function memNote(m){ // "Saved to memory: … · Undo"
   d.querySelector('button').onclick=async()=>{await post('/api/memory',{action:'delete',id:m.id});d.textContent='Memory removed';};}
 function paint(){
   document.querySelectorAll('#backend button').forEach(b=>b.classList.toggle('on',b.dataset.b===S.backend));
-  const chat=S.backend==='chatgpt'; // plain chat: no folder, always read-only
-  document.querySelectorAll('#mode button').forEach(b=>{b.classList.toggle('on',b.dataset.m===S.mode);b.disabled=chat;});
+  const chat=S.backend==='chatgpt'; // plain chat: no folder, never edits (Ask or Plan only)
+  if(chat&&S.mode==='agent')S.mode='ask';
+  document.querySelectorAll('#mode button').forEach(b=>{b.classList.toggle('on',b.dataset.m===S.mode);b.disabled=chat&&b.dataset.m==='agent';});
   $('#workdir').disabled=chat;$('#workdir').title=chat?'ChatGPT is a plain chat and does not use a folder':'Folder the assistant works in';}
 $('#backend').onclick=e=>{const b=e.target.dataset.b;if(!b||e.target.disabled)return;
   if(b!==S.backend){S.backend=b;store.set('backend',b);
     add('note','', 'Switched to '+NAMES[b]+(S.sessions[b]?' — continuing its earlier chat':''));
     loadModels();}paint();};
-$('#mode').onclick=e=>{const m=e.target.dataset.m;if(!m)return;S.mode=m;store.set('mode',m);paint();};
+$('#mode').onclick=e=>{const m=e.target.dataset.m;if(!m||e.target.disabled)return;S.mode=m;store.set('mode',m);paint();
+  $('#msg').placeholder=m==='plan'?'Describe what to build — you get a plan (.md) to review first…':'Message… (Enter to send, Shift+Enter for new line)';};
 $('#model').onchange=e=>store.set('model_'+S.backend,e.target.value);
-$('#workdir').onchange=e=>{store.set('workdir',e.target.value);S.sessions=fresh();
+$('#workdir').onchange=e=>{store.set('workdir',e.target.value);S.sessions=fresh();S.sent=fresh();
   add('note','','Folder changed — new chat started');};
-$('#newchat').onclick=()=>{S.sessions=fresh();log.innerHTML='';add('note','','New chat');};
+$('#newchat').onclick=()=>{S.sessions=fresh();S.sent=fresh();S.log=[];log.innerHTML='';add('note','','New chat');};
 $('#msg').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('#f').requestSubmit();}};
 $('#f').onsubmit=async e=>{e.preventDefault();const text=$('#msg').value.trim();if(!text||S.busy)return;
   const rm=text.match(/^\/remember\s+([\s\S]+)/i);
   if(rm){$('#msg').value='';const r=await post('/api/memory',{action:'add',text:rm[1]});
     if(r.error)add('note','',esc(r.error));else memNote(r.memories[r.memories.length-1]);return;}
   const b=S.backend,name=NAMES[b];
-  $('#msg').value='';rememberBtn(add('you','You',esc(text)),text);
+  $('#msg').value='';rememberBtn(add('you','You',esc(text)),text);S.log.push({role:'you',who:'You',text});
   const pending=add('bot '+b,name,'<span class="note">Thinking…</span>');
   S.busy=true;$('#send').disabled=true;const t0=Date.now();
   const tick=setInterval(()=>{pending.querySelector('.note').textContent='Thinking… '+Math.round((Date.now()-t0)/1000)+'s'},1000);
   try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({backend:b,message:text,session_id:S.sessions[b],mode:S.mode,context_version:S.ctx[b],
+      body:JSON.stringify({backend:b,message:text,session_id:S.sessions[b],mode:S.mode,context_version:S.ctx[b],sent_notes:S.sent[b]||[],
         model:$('#model').value,workdir:$('#workdir').value})}).then(r=>r.json());
     if(r.session_id)S.sessions[b]=r.session_id;
     if(r.context_version!==undefined)S.ctx[b]=r.context_version;
     pending.innerHTML='<div class="who">'+name+'</div>'+(r.error?'<span class="err">'+esc(r.error)+'</span>'
       +(/Open Accounts/.test(r.error)?'<div class="row" style="margin-top:8px"><button class="btn" onclick="openAccounts()">Open Accounts</button></div>':'')
       :fmt(r.reply||'(empty reply)'));
-    if(r.reply)rememberBtn(pending,r.reply);
+    if(r.reply){rememberBtn(pending,r.reply);S.log.push({role:'bot',who:name,text:r.reply});}
+    if(r.plan_file)planNote(r.plan_file,b);
+    if(r.plan_error)add('note','',esc(r.plan_error));
+    if(r.notes_used&&r.notes_used.length){S.sent[b]=(S.sent[b]||[]).concat(r.notes_used.map(n=>n.path));
+      add('memnote','','📓 Used from Obsidian: '+r.notes_used.map(n=>esc(n.title)).join(', '));}
     (r.saved_memories||[]).forEach(memNote);
   }catch(err){pending.innerHTML='<div class="who">'+name+'</div><span class="err">'+esc(String(err))+'</span>';}
   clearInterval(tick);S.busy=false;$('#send').disabled=false;$('#msg').focus();$('main').scrollTop=1e9;};
 // ---- Settings & memory ----
 function renderSettings(p){
   $('#use_memory').checked=p.settings.use_memory;$('#auto_memory').checked=p.settings.auto_memory;
+  $('#memory_in_vault').checked=p.settings.memory_in_vault;$('#vault_search').checked=p.settings.vault_search;
+  $('#vaultopts').hidden=!p.vault;$('#vaulthint').hidden=!!p.vault;
   if(document.activeElement!==$('#instructions'))$('#instructions').value=p.settings.instructions||'';
   $('#mempath').textContent=p.memories.length+' saved · stored in '+p.path;
   $('#memclear').disabled=!p.memories.length;
@@ -554,6 +644,8 @@ $('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch(
 $('#setclose').onclick=()=>$('#set').close();
 $('#use_memory').onchange=e=>memAct({settings:{use_memory:e.target.checked}});
 $('#auto_memory').onchange=e=>memAct({settings:{auto_memory:e.target.checked}});
+$('#memory_in_vault').onchange=e=>memAct({settings:{memory_in_vault:e.target.checked}});
+$('#vault_search').onchange=e=>memAct({settings:{vault_search:e.target.checked}});
 $('#instsave').onclick=async()=>{await memAct({settings:{instructions:$('#instructions').value}});
   $('#instmsg').textContent='Saved. New chats will use it.';setTimeout(()=>$('#instmsg').textContent='',3000);};
 $('#memadd').onsubmit=async e=>{e.preventDefault();const t=$('#memtext').value.trim();if(!t)return;
@@ -561,6 +653,39 @@ $('#memadd').onsubmit=async e=>{e.preventDefault();const t=$('#memtext').value.t
 $('#memlist').addEventListener('change',e=>{const row=e.target.closest('.mem');if(row)memAct({action:'edit',id:row.dataset.id,text:e.target.value});});
 $('#memlist').addEventListener('click',e=>{const row=e.target.closest('.mem');if(row&&e.target.tagName==='BUTTON')memAct({action:'delete',id:row.dataset.id});});
 $('#memclear').onclick=()=>{if(confirm('Delete all memories? This cannot be undone.'))memAct({action:'clear'});};
+
+// ---- Plans ----
+function planNote(path,b){ // "Plan saved: … [Open] [Implement plan]"
+  const d=add('memnote','','📝 Plan saved: <code>'+esc(path)+'</code> <button type="button" data-p="open">Open</button>'
+    +(b==='chatgpt'?' · switch to Cursor, Claude or Codex to build it':' <button type="button" data-p="go">Implement plan</button>'));
+  d.addEventListener('click',e=>{const t=e.target.dataset.p;if(!t)return;
+    if(t==='open'){post('/api/openfile',{path});return;}
+    if(S.backend!==b){S.backend=b;store.set('backend',b);loadModels();}
+    S.mode='agent';store.set('mode','agent');paint();
+    $('#msg').value='Implement the plan in "'+path+'". Work through the checklist step by step, and tick off each item in that file ("- [x]") as you finish it.';
+    $('#f').requestSubmit();});}
+
+// ---- Obsidian ----
+let VAULT=null;
+function renderObsidian(p){
+  VAULT=p.vault;$('#savebtn').hidden=!VAULT;
+  let h='<div class="acc-h"><b>Obsidian</b><span class="pill '+(VAULT?'ok">Connected · '+esc(VAULT.name)+' ('+VAULT.notes+' notes)':'bad">Not connected')+'</span></div>'
+    +'<div class="muted">Long-term memory for every assistant. Your vault stays on this computer; no sign-in needed. Related notes are sent only to the assistant you chat with.</div>';
+  if(VAULT)h+='<div class="muted">'+esc(VAULT.path)+'</div><div class="row"><button class="ghost" data-obs="disconnect">Disconnect</button></div>';
+  else{
+    h+=(p.detected||[]).map(d=>'<div class="row"><button class="btn" data-obs="connect" data-path="'+esc(d).replace(/"/g,'&quot;')+'">Connect “'+esc(d.split('/').pop())+'”</button><span class="muted">'+esc(d)+'</span></div>').join('');
+    h+='<form class="row" id="obsform"><input id="obspath" placeholder="Or type the vault folder, e.g. ~/Documents/MyVault" style="flex:1;min-width:200px"><button class="ghost">Connect</button></form>';}
+  $('#obs').innerHTML=h;}
+async function obsAct(body){const r=await post('/api/obsidian',body);if(r.error)alert(r.error);renderObsidian(r);
+  if($('#set').open)renderSettings(r);for(const k in S.ctx)S.ctx[k]=null;return r;}
+$('#obs').addEventListener('click',e=>{const t=e.target.closest('[data-obs]');if(!t)return;
+  if(t.dataset.obs==='disconnect'&&!confirm('Disconnect Obsidian? Your notes stay where they are. Memories go back to Chatbox\'s own list.'))return;
+  obsAct({action:t.dataset.obs,path:t.dataset.path});});
+$('#obs').addEventListener('submit',e=>{e.preventDefault();const v=$('#obspath').value.trim();if(v)obsAct({action:'connect',path:v});});
+$('#savebtn').onclick=async()=>{if(!S.log.length){add('note','','Nothing to save yet.');return;}
+  const r=await post('/api/obsidian',{action:'save_chat',messages:S.log,backend:NAMES[S.backend]});
+  add('memnote','',r.error?esc(r.error):'📓 Saved to Obsidian: '+esc(r.saved));};
+fetch('/api/settings').then(r=>r.json()).then(renderObsidian);
 
 // ---- Accounts ----
 const SVC={cursor:'cursor',claude:'claude',codex:'codex',chatgpt:'codex'};
@@ -614,7 +739,7 @@ $('#acclist').addEventListener('click',async e=>{
   if(r.error)alert(r.error);
   if(act==='dismiss'){for(const k in modelCache)delete modelCache[k];loadModels();}
   accJSON='';refreshAccounts(act==='dismiss');});
-function openAccounts(){if(!$('#acc').open)$('#acc').showModal();accJSON='';refreshAccounts(true);}
+function openAccounts(){if(!$('#acc').open)$('#acc').showModal();accJSON='';refreshAccounts(true);fetch('/api/settings').then(r=>r.json()).then(renderObsidian);}
 $('#accbtn').onclick=openAccounts;
 $('#accclose').onclick=()=>{$('#acc').close();};
 $('#acc').addEventListener('close',()=>{clearTimeout(accTimer);refreshAccounts(true);});

@@ -12,11 +12,16 @@ import threading
 import time
 import uuid
 
+import vault as vaultmod
+
 MAX_MEMORY = 500  # characters per memory
 DEFAULTS = {
     "use_memory": True,     # send memories + instructions at the start of each chat
     "auto_memory": True,    # let assistants save new memories (REMEMBER: lines)
     "instructions": "",     # custom instructions for every assistant
+    "vault_path": "",       # connected Obsidian vault ("" = none)
+    "memory_in_vault": True,  # keep memories in the vault's Chatbox/Memories.md
+    "vault_search": True,   # give the assistant notes related to each message
 }
 REMEMBER = re.compile(r"^[ \t>*_-]*REMEMBER:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -48,17 +53,53 @@ class Store:
         s.update({k: v for k, v in self._load(self.settings_path, {}).items() if k in DEFAULTS})
         return s
 
+    def vault(self):
+        """The connected vault, or None."""
+        p = self.settings()["vault_path"]
+        return vaultmod.Vault(p) if vaultmod.is_vault(p) else None
+
+    def _vault_memory(self):
+        v = self.vault()
+        return v if v and self.settings()["memory_in_vault"] else None
+
     def memories(self):
+        v = self._vault_memory()
+        if v:
+            return v.read_memories()
         items = self._load(self.memories_path, [])
         return [m for m in items if isinstance(m, dict) and m.get("text")]
+
+    def _put(self, items):
+        v = self._vault_memory()
+        if v:
+            v.write_memories(items)
+        else:
+            self._save(self.memories_path, items)
+
+    def connect_vault(self, path):
+        path = os.path.abspath(os.path.expanduser(path or ""))
+        if not vaultmod.is_vault(path):
+            raise ValueError("That folder doesn't exist.")
+        local = self.memories() if not self._vault_memory() else []
+        self.update_settings({"vault_path": path})
+        if self._vault_memory() and local:  # bring existing memories along
+            have = {m["text"].lower() for m in self.memories()}
+            merged = self.memories() + [m for m in local if m["text"].lower() not in have]
+            with self.lock:
+                self._put(merged)
+
+    def disconnect_vault(self):
+        self.update_settings({"vault_path": ""})
 
     # ---- changes --------------------------------------------------------
     def update_settings(self, new):
         with self.lock:
             s = self.settings()
             for k, v in (new or {}).items():
-                if k in ("use_memory", "auto_memory"):
+                if k in ("use_memory", "auto_memory", "memory_in_vault", "vault_search"):
                     s[k] = bool(v)
+                elif k == "vault_path":
+                    s[k] = str(v)
                 elif k == "instructions":
                     s[k] = str(v)[:4000]
             self._save(self.settings_path, s)
@@ -75,7 +116,7 @@ class Store:
             item = {"id": uuid.uuid4().hex[:12], "text": text, "source": source,
                     "created": time.strftime("%Y-%m-%d")}
             items.append(item)
-            self._save(self.memories_path, items)
+            self._put(items)
             return item
 
     def edit(self, mid, text):
@@ -89,15 +130,15 @@ class Store:
                     else:
                         items.remove(m)
                     break
-            self._save(self.memories_path, items)
+            self._put(items)
 
     def delete(self, mid):
         with self.lock:
-            self._save(self.memories_path, [m for m in self.memories() if m["id"] != mid])
+            self._put([m for m in self.memories() if m["id"] != mid])
 
     def clear(self):
         with self.lock:
-            self._save(self.memories_path, [])
+            self._put([])
 
     # ---- use in chats ---------------------------------------------------
     def version(self):

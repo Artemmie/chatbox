@@ -236,3 +236,14 @@ def open_url(url):
             continue
     import webbrowser
     webbrowser.open(url)
+
+
+def open_path(path):
+    """Open a local file with the default app (e.g. a plan .md in Obsidian or a text editor)."""
+    for argv in (["xdg-open", path], ["distrobox-host-exec", "xdg-open", path]):
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+            return
+        except OSError:
+            continue
