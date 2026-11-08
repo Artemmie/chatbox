@@ -12,19 +12,22 @@ import re
 import select
 import signal
 import subprocess
+import sys
 import threading
 import time
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\r")
 URL = re.compile(r"https://[^\s'\"<>]+")
+DEVICE_CODE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
 JOB_LIMIT = 15 * 60  # seconds before an unfinished sign-in is stopped
 
 INSTALL = {
     "cursor": "curl https://cursor.com/install -fsS | bash",
     "claude": "curl -fsSL https://claude.ai/install.sh | bash",
-    # Standalone Codex from OpenAI's GitHub releases, into ~/.local/bin/codex.
+    # Standalone Codex from OpenAI's GitHub releases (Linux or macOS build), into ~/.local/bin/codex.
     "codex": ('set -e; a=$(uname -m); case $a in aarch64|arm64) a=aarch64;; *) a=x86_64;; esac; '
-              'n=codex-$a-unknown-linux-musl; t=$(mktemp -d); '
+              'case $(uname -s) in Darwin) n=codex-$a-apple-darwin;; *) n=codex-$a-unknown-linux-musl;; esac; '
+              't=$(mktemp -d); '
               'echo "Downloading $n…"; '
               'curl -fsSL -o "$t/c.tgz" "https://github.com/openai/codex/releases/latest/download/$n.tar.gz"; '
               'tar xzf "$t/c.tgz" -C "$t"; mkdir -p "$HOME/.local/bin"; '
@@ -43,9 +46,10 @@ SERVICES = {
 class Job:
     """One running install / login command, read through a pseudo-terminal."""
 
-    def __init__(self, service, kind, argv, on_done):
+    def __init__(self, service, kind, argv, on_done, open_url=False):
         self.service, self.kind = service, kind
         self.output, self.url, self.state, self.code = "", None, "running", None
+        self.user_code, self.open_url = None, open_url  # device-code sign-in (Codex)
         self.started = time.time()
         self._on_done = on_done
         self.pid, self.fd = pty.fork()
@@ -82,6 +86,15 @@ class Job:
                 m = URL.search(self.output)
                 if m:
                     self.url = m.group(0).rstrip(".,)")
+                    if self.open_url:  # the tool doesn't open the browser itself here
+                        try:
+                            open_url(self.url)
+                        except Exception:
+                            pass
+            if not self.user_code and "code" in self.output.lower():
+                m = DEVICE_CODE.search(self.output.split("code", 1)[-1])
+                if m:
+                    self.user_code = m.group(0)
         self._exited(wait=True)
         try:
             os.close(self.fd)
@@ -121,8 +134,12 @@ class Job:
         last = next((l.strip() for l in reversed(tail.splitlines())
                      if l.strip() and "https://" not in l), "")
         last = last.replace("Paste code here if prompted >", "").strip()
+        if self.user_code:
+            tail = tail.replace(self.user_code, "••••-••••")
+            last = ""
         return {"kind": self.kind, "state": self.state, "url": self.url, "output": tail,
-                "last": last[:300], "asks_code": asks_code and self.state == "running"}
+                "last": last[:300], "asks_code": asks_code and self.state == "running",
+                "user_code": self.user_code if self.state == "running" else None}
 
 
 class Accounts:
@@ -213,37 +230,49 @@ class Accounts:
         elif not exe:
             raise ValueError(f"{SERVICES[sid]['name']} is not installed yet.")
         elif action == "login":
+            # Codex: device code (open a page, type a code). Its browser-redirect sign-in uses
+            # localhost:1455, which another Codex (e.g. the ChatGPT app) can cancel.
             argv = {"cursor": [exe, "login"], "claude": [exe, "auth", "login", "--claudeai"],
-                    "codex": [exe, "login"]}[sid]
+                    "codex": [exe, "login", "--device-auth"]}[sid]
+        elif action == "login_browser" and sid == "codex":
+            argv, action = [exe, "login"], "login"
         elif action == "logout":
             argv = {"cursor": [exe, "logout"], "claude": [exe, "auth", "logout"],
                     "codex": [exe, "logout"]}[sid]
         else:
             raise ValueError("Unknown action")
-        self.jobs[sid] = Job(sid, action, argv, self._job_done)
+        device = sid == "codex" and "--device-auth" in argv
+        self.jobs[sid] = Job(sid, action, argv, self._job_done, open_url=device)
 
 
-def open_url(url):
-    """Open an https link in the user's browser (from inside a distrobox, too)."""
-    if not url.startswith("https://"):
-        raise ValueError("Only https links can be opened.")
-    for argv in (["xdg-open", url], ["distrobox-host-exec", "xdg-open", url]):
+def _openers(target):
+    """Commands that open a link or file with the default app, best first."""
+    if sys.platform == "darwin":
+        return [["open", target]]
+    # inside a distrobox, xdg-open may only work on the host
+    return [["xdg-open", target], ["distrobox-host-exec", "xdg-open", target]]
+
+
+def _launch(target):
+    for argv in _openers(target):
         try:
             subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              stdin=subprocess.DEVNULL, start_new_session=True)
-            return
+            return True
         except OSError:
             continue
-    import webbrowser
-    webbrowser.open(url)
+    return False
+
+
+def open_url(url):
+    """Open an https link in the user's browser."""
+    if not url.startswith("https://"):
+        raise ValueError("Only https links can be opened.")
+    if not _launch(url):
+        import webbrowser
+        webbrowser.open(url)
 
 
 def open_path(path):
     """Open a local file with the default app (e.g. a plan .md in Obsidian or a text editor)."""
-    for argv in (["xdg-open", path], ["distrobox-host-exec", "xdg-open", path]):
-        try:
-            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             stdin=subprocess.DEVNULL, start_new_session=True)
-            return
-        except OSError:
-            continue
+    _launch(path)

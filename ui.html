@@ -7,13 +7,13 @@
   --bg:#faf9f5;--side:#f3f1ea;--panel:#ffffff;--text:#1f1e1d;--muted:#6f6d66;--faint:#9a988f;
   --line:#e6e3da;--line2:#d9d5ca;--hover:rgba(31,30,29,.06);--you:#efece3;--code:#f5f3ee;
   --accent:#c96442;--err:#b3261e;--ok:#1f8a5b;--shadow:0 1px 2px rgba(0,0,0,.04),0 6px 24px rgba(0,0,0,.06);
-  --cursor:#1f1e1d;--claude:#c96442;--codex:#10a37f;--chatgpt:#6e56cf;
+  --cursor:#2a78d6;--claude:#c96442;--codex:#10a37f;--chatgpt:#6e56cf;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#262624;--side:#1f1e1d;--panel:#30302e;--text:#f5f4ef;--muted:#a6a49c;--faint:#7d7b74;
   --line:#3a3936;--line2:#4a4945;--hover:rgba(255,255,255,.06);--you:#3a3936;--code:#1c1c1b;
   --accent:#d97757;--err:#f2b8b5;--ok:#5fd39b;--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px rgba(0,0,0,.35);
-  --cursor:#e9e8e3;--claude:#d97757;--codex:#19c37d;--chatgpt:#a594f9;
+  --cursor:#3f86e0;--claude:#d06a48;--codex:#12a07a;--chatgpt:#8a74ea;
 }}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -162,6 +162,36 @@ main.is-empty .composer-wrap{padding-bottom:14vh}
 .mi .bdot{margin-top:7px}
 .mh{font-size:11px;color:var(--faint);padding:6px 10px 2px;text-transform:uppercase;letter-spacing:.04em}
 
+/* usage */
+dialog.wide{width:min(880px,calc(100vw - 32px))}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;padding:2px;gap:2px}
+.seg button{border:0;background:transparent;border-radius:8px;padding:4px 12px;font-size:13px;color:var(--muted);cursor:pointer}
+.seg button.on{background:var(--hover);color:var(--text);font-weight:500}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.tile{border:1px solid var(--line);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.tile .tn{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.tile .big{font-size:26px;font-weight:600;letter-spacing:-.01em;line-height:1.2;color:var(--text)}
+.tile .sm{font-size:12px;color:var(--muted)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.chart{position:relative;height:220px}
+.chart svg{width:100%;height:100%;display:block;overflow:visible}
+.chart .gl{stroke:var(--line);stroke-width:1}
+.chart .ax{fill:var(--faint);font-size:11px}
+.chart .hit{fill:transparent;cursor:default}
+.chart .col:hover .hit{fill:var(--hover)}
+.tip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:8px 10px;font-size:12px;min-width:150px;display:none;z-index:2}
+.tip b{display:block;margin-bottom:4px;color:var(--text)}
+.tip div{display:flex;align-items:center;gap:6px;color:var(--muted)}.tip div em{margin-left:auto;font-style:normal;color:var(--text)}
+.utable{width:100%;border-collapse:collapse;font-size:13px}
+.utable th{color:var(--muted);font-weight:500;text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+.utable td{padding:6px 8px;border-bottom:1px solid var(--line)}
+.utable td.n,.utable th.n{text-align:right;font-variant-numeric:tabular-nums}
+.utable tr:last-child td{border-bottom:0}
+#u-note a{color:var(--accent);cursor:pointer;text-decoration:underline}
+.uempty{color:var(--muted);font-size:14px;padding:30px 0;text-align:center}
+
 /* dialogs */
 dialog{border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--text);padding:0;width:min(640px,calc(100vw - 32px));max-height:calc(100vh - 48px);box-shadow:var(--shadow)}
 dialog::backdrop{background:rgba(0,0,0,.4);backdrop-filter:blur(2px)}
@@ -208,6 +238,7 @@ code.path{font:12px ui-monospace,monospace;color:var(--muted);word-break:break-a
     <nav id="chatlist"></nav>
     <div class="side-bottom">
       <button class="side-item" id="accbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5"/></svg>Accounts<span class="dot"></span></button>
+      <button class="side-item" id="usebtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 20h16"/><path d="M7 16v-5M12 16V6M17 16v-8"/></svg>Usage</button>
       <button class="side-item" id="setbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings<span class="sub" id="memcount"></span></button>
     </div>
   </aside>
@@ -250,6 +281,30 @@ code.path{font:12px ui-monospace,monospace;color:var(--muted);word-break:break-a
     <input class="field" id="folderinput" placeholder="/home/you/projects/my-app">
     <div class="row"><button class="btn">Use this folder</button><span class="muted">Changing it starts fresh conversations.</span></div>
   </form>
+</dialog>
+
+<dialog id="usage" class="wide">
+  <div class="dlg-h"><h2>Usage</h2><button class="icon" data-close title="Close">✕</button></div>
+  <div class="dlg-b">
+    <div class="row" style="justify-content:space-between">
+      <div class="seg" id="u-range"><button data-d="7">7 days</button><button data-d="30">30 days</button><button data-d="0">All time</button></div>
+      <div class="seg" id="u-metric"><button data-k="messages">Messages</button><button data-k="tokens">Tokens</button></div>
+    </div>
+    <div class="tiles" id="u-tiles"></div>
+    <section class="sec">
+      <div class="sec-h"><b id="u-charttitle">Messages per day</b></div>
+      <div class="legend" id="u-legend"></div>
+      <div class="chart" id="u-chart"></div>
+    </section>
+    <section class="sec">
+      <div class="sec-h"><b>By model</b><span class="muted" id="u-modes"></span></div>
+      <div id="u-models"></div>
+    </section>
+    <div class="muted" id="u-note">Chatbox counts only what you send through Chatbox. Your remaining subscription limits aren't available to it — check them in each service:
+      <a data-href="https://claude.ai/settings/usage">Claude usage</a> · <a data-href="https://cursor.com/dashboard">Cursor dashboard</a> · ChatGPT: Settings in the ChatGPT app.
+      Claude's cost is what the same use would cost at API prices; with a Pro/Max subscription you don't pay it per message.</div>
+    <div class="row"><button class="ghost" id="u-clear">Clear statistics</button><span class="muted">Stored only on this computer.</span></div>
+  </div>
 </dialog>
 
 <dialog id="set">
@@ -370,8 +425,8 @@ function render(item){ // one stored item -> DOM
   const d=document.createElement('div');d.item=item;
   if(item.r==='you'){d.className='m-you';d.innerHTML='<div class="bubble">'+esc(item.t)+'</div>'+actionsHTML();}
   else if(item.r==='bot'||item.r==='err'){d.className='m-bot';const b=item.b;
-    d.innerHTML='<div class="avatar" style="background:'+color(b)+(b==='cursor'?';color:var(--bg)':'')+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]
-      +(item.mode?'<span class="meta">'+MODES[item.mode][0]+(item.model?' · '+esc(item.model):'')+'</span>':'')+'</div>'
+    d.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]
+      +(item.mode?'<span class="meta">'+MODES[item.mode][0]+(item.model?' · '+esc(item.model):'')+(item.u?usageMeta(item.u):'')+'</span>':'')+'</div>'
       +(item.r==='err'?'<div class="err">'+esc(item.t)+'</div>'+(/Open Accounts/.test(item.t)?'<div class="row" style="margin-top:8px"><button class="ghost" type="button" data-openacc>Open Accounts</button></div>':'')
         :'<div class="md">'+md(item.t)+'</div>'+actionsHTML())+'</div>';}
   else if(item.r==='plan'){d.className='card';
@@ -504,7 +559,7 @@ async function send(text){
   CHAT.workdir=S.workdir||S.home; // each chat keeps its own folder (sessions belong to it)
   addItem({r:'you',t:text,b});
   const pend=document.createElement('div');pend.className='m-bot';
-  pend.innerHTML='<div class="avatar" style="background:'+color(b)+(b==='cursor'?';color:var(--bg)':'')+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]+'</div><div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="tm">'+(mode==='plan'?'Planning':mode==='agent'?'Working':'Thinking')+'…</span></div></div>';
+  pend.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]+'</div><div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="tm">'+(mode==='plan'?'Planning':mode==='agent'?'Working':'Thinking')+'…</span></div></div>';
   thread.appendChild(pend);scrollDown();
   S.busy=true;paint();const t0=Date.now();
   const tick=setInterval(()=>{const s=Math.round((Date.now()-t0)/1000);pend.querySelector('.tm').textContent=(mode==='plan'?'Planning':mode==='agent'?'Working':'Thinking')+'… '+s+'s';},1000);
@@ -516,8 +571,9 @@ async function send(text){
   if(r.session_id)CHAT.sessions[b]=r.session_id;
   if(r.context_version!==undefined)CHAT.ctx[b]=r.context_version;
   const label=model?((Array.isArray(modelCache[b])&&modelCache[b].find(m=>m[0]===model)||[model,model])[1]):'';
+  const u=r.usage?{tok:(r.usage.input||0)+(r.usage.output||0),s:r.usage.seconds,cost:r.usage.cost}:null;
   if(r.error)addItem({r:'err',t:r.error,b,mode});
-  else addItem({r:'bot',t:r.reply||'(empty reply)',b,mode,model:label});
+  else addItem({r:'bot',t:r.reply||'(empty reply)',b,mode,model:label,u});
   if(r.plan_file)addItem({r:'plan',path:r.plan_file,b});
   if(r.plan_error)addItem({r:'note',t:r.plan_error});
   if(r.notes_used&&r.notes_used.length){CHAT.sent[b]=(CHAT.sent[b]||[]).concat(r.notes_used.map(n=>n.path));
@@ -590,16 +646,24 @@ function renderAccounts(list){
     const busy=a.job&&a.job.state==='running';const dis=busy?' disabled':'';
     let btns='';
     if(!a.installed)btns='<button class="btn" data-act="install" data-s="'+a.id+'"'+dis+'>Install</button>';
-    else if(!a.logged_in)btns='<button class="btn" data-act="login" data-s="'+a.id+'"'+dis+'>Sign in</button>';
+    else if(!a.logged_in)btns='<button class="btn" data-act="login" data-s="'+a.id+'"'+dis+'>Sign in</button>'
+      +(a.id==='codex'?' <button class="ghost" data-act="login_browser" data-s="codex"'+dis+' title="Older method: the browser sends you back to Codex on this computer">Sign in with browser redirect</button>':'');
     else btns='<button class="ghost" data-act="logout" data-s="'+a.id+'"'+dis+'>Sign out</button>';
     if(a.installed&&a.id==='codex'&&a.source)btns+=' <button class="ghost" data-act="install" data-s="codex"'+dis+' title="OpenAI’s standalone Codex is newer and supports more models">Install standalone Codex</button>';
     let job='';
     if(a.job){const J=a.job,what={install:'Installing',login:'Signing in',logout:'Signing out'}[J.kind];
       const state=J.state==='running'?what+'…':J.state==='done'?{install:'Installed',login:'Sign-in finished',logout:'Signed out'}[J.kind]+' ✓':J.state==='cancelled'?'Cancelled':'Something went wrong';
       job='<div class="job"><b>'+state+'</b>';
-      if(J.state==='running'&&J.kind==='login'){
+      if(J.state==='running'&&J.kind==='login'&&J.user_code){ // Codex device code
+        job+='<div class="muted">1. A sign-in page should open in your browser. Sign in to your ChatGPT account.</div>'
+          +'<div class="muted">2. Enter this one-time code there (it expires in 15 minutes):</div>'
+          +'<div class="row"><code style="font-size:20px;letter-spacing:.08em;padding:4px 12px">'+esc(J.user_code)+'</code><button class="ghost" data-act="copycode" data-code="'+esc(J.user_code)+'">Copy code</button>'
+          +(J.url?'<button class="ghost" data-act="open" data-url="'+esc(J.url)+'">Open sign-in page</button>':'')+'</div>'
+          +'<div class="muted">This finishes by itself once you enter the code. If the page says device sign-in is off, turn on “device code authorization” in ChatGPT’s security settings, or use “Sign in with browser redirect”.</div>';}
+      else if(J.state==='running'&&J.kind==='login'){
         job+='<div class="muted">Your browser should open. Sign in there'+(a.id==='claude'?', then copy the code it shows and paste it below.':' and this finishes by itself.')+'</div>';
-        if(J.url)job+='<div class="row"><button class="ghost" data-act="open" data-url="'+esc(J.url)+'">Open sign-in page</button></div>';}
+        if(J.url)job+='<div class="row"><button class="ghost" data-act="open" data-url="'+esc(J.url)+'">Open sign-in page</button></div>';
+        if(a.id==='codex')job+='<div class="muted">Keep the ChatGPT app closed while signing in: it can cancel this sign-in.</div>';}
       if(J.last&&J.state!=='cancelled'&&!/^(Opening browser|If the browser)/.test(J.last))job+='<div class="muted">'+esc(J.last)+'</div>';
       if(J.asks_code)job+='<div class="row"><input class="field" id="code_'+a.id+'" placeholder="Paste the code from the browser" value="'+esc(codes[a.id]||'')+'"><button class="btn" data-act="input" data-s="'+a.id+'">Submit code</button></div>';
       if(J.output)job+='<details'+(J.state==='failed'?' open':'')+'><summary class="muted">Details</summary><pre>'+esc(J.output)+'</pre></details>';
@@ -613,6 +677,7 @@ $('#acclist').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id&&e.
 $('#acclist').addEventListener('click',async e=>{
   const t=e.target.closest('[data-act]');if(!t)return;const act=t.dataset.act,s=t.dataset.s,name=ACC[s]&&ACC[s].name;
   if(act==='open'){post('/api/open',{url:t.dataset.url});return;}
+  if(act==='copycode'){copy(t.dataset.code,t);return;}
   if(act==='install'&&!confirm('Download and run the official '+name+' installer?'))return;
   if(act==='logout'&&!confirm('Sign out of '+name+' on this computer?'+(s==='codex'?'\n\nThis also signs out Codex in the ChatGPT app.':'')))return;
   const body={service:s,action:act};
@@ -623,6 +688,62 @@ $('#acclist').addEventListener('click',async e=>{
 function openAccounts(){if(!$('#acc').open)$('#acc').showModal();accJSON='';refreshAccounts(true);fetch('/api/settings').then(r=>r.json()).then(renderObsidian);}
 $('#accbtn').onclick=openAccounts;
 $('#acc').addEventListener('close',()=>{clearTimeout(accTimer);refreshAccounts(true);});
+
+
+// ===== Usage =====
+const UORDER=['claude','cursor','codex','chatgpt']; // fixed chart order (validated palette)
+const fmtN=n=>n>=1e6?(n/1e6).toFixed(n>=1e7?0:1)+'M':n>=1e3?(n/1e3).toFixed(n>=1e4?0:1)+'k':String(Math.round(n));
+const fmtS=s=>s>=90?Math.round(s/60)+'m':s>=10?Math.round(s)+'s':(Math.round(s*10)/10)+'s';
+const fmt$=c=>'$'+(c>=100?c.toFixed(0):c>=1?c.toFixed(2):c.toFixed(3));
+function usageMeta(u){return (u.tok?' · '+fmtN(u.tok)+' tokens':'')+(u.s?' · '+fmtS(u.s):'')+(typeof u.cost==='number'?' · '+fmt$(u.cost):'');}
+const U={days:+(store.get('u_days')||30),metric:store.get('u_metric')||'messages',data:null};
+async function loadUsage(){U.data=await fetch('/api/usage?days='+U.days).then(r=>r.json());renderUsage();}
+function renderUsage(){const d=U.data;if(!d)return;
+  document.querySelectorAll('#u-range button').forEach(b=>b.classList.toggle('on',+b.dataset.d===U.days));
+  document.querySelectorAll('#u-metric button').forEach(b=>b.classList.toggle('on',b.dataset.k===U.metric));
+  $('#u-tiles').innerHTML=UORDER.map(b=>{const t=d.totals[b];
+    return '<div class="tile"><div class="tn"><span class="bdot" style="background:'+color(b)+'"></span>'+NAMES[b]+'</div>'
+      +'<div class="big">'+fmtN(t.messages)+'</div><div class="sm">'+(t.messages===1?'message':'messages')+(t.errors?' · '+t.errors+' failed':'')+'</div>'
+      +'<div class="sm">'+fmtN(t.input+t.output)+' tokens'+(t.messages?' · avg '+fmtS(t.seconds/t.messages):'')+'</div>'
+      +(t.has_cost?'<div class="sm">≈ '+fmt$(t.cost)+' at API prices</div>':'')+'</div>';}).join('');
+  $('#u-charttitle').textContent=(U.metric==='tokens'?'Tokens':'Messages')+' per day';
+  $('#u-legend').innerHTML=UORDER.map(b=>'<span><i style="background:'+color(b)+'"></i>'+NAMES[b]+'</span>').join('');
+  drawChart(d.series,U.metric);
+  $('#u-modes').textContent=d.count?'Ask '+d.modes.ask+' · Plan '+d.modes.plan+' · Agent '+d.modes.agent:'';
+  $('#u-models').innerHTML=d.models.length?'<table class="utable"><thead><tr><th>Assistant</th><th>Model</th><th class="n">Messages</th><th class="n">Tokens in</th><th class="n">Tokens out</th><th class="n">Avg time</th><th class="n">Cost</th></tr></thead><tbody>'
+    +d.models.map(m=>'<tr><td><span class="row" style="gap:6px"><span class="bdot" style="background:'+color(m.backend)+'"></span>'+NAMES[m.backend]+'</span></td><td>'+esc(m.model)+'</td><td class="n">'+m.messages+'</td><td class="n">'+fmtN(m.input)+'</td><td class="n">'+fmtN(m.output)+'</td><td class="n">'+fmtS(m.seconds/m.messages)+'</td><td class="n">'+(m.has_cost?fmt$(m.cost):'—')+'</td></tr>').join('')+'</tbody></table>'
+    :'<div class="uempty">No usage yet — send a message and it shows up here.</div>';}
+function drawChart(series,key){
+  const box=$('#u-chart'),W=box.clientWidth||800,H=box.clientHeight||220,L=40,B=22,T=8;
+  const vals=series.map(d=>UORDER.reduce((a,b)=>a+d[b][key],0));const max=Math.max(1,...vals);
+  const step=Math.pow(10,Math.floor(Math.log10(max)));const top=Math.ceil(max/step)*step;
+  const n=series.length,cw=(W-L)/n,bw=Math.max(2,Math.min(28,cw*0.62)),y=v=>T+(H-B-T)*(1-v/top);
+  let g='';
+  for(let k=0;k<=3;k++){const v=top*k/3,yy=y(v);g+='<line class="gl" x1="'+L+'" x2="'+W+'" y1="'+yy+'" y2="'+yy+'"/><text class="ax" x="'+(L-6)+'" y="'+(yy+4)+'" text-anchor="end">'+fmtN(v)+'</text>';}
+  const every=Math.ceil(n/8);
+  series.forEach((d,i)=>{const x=L+i*cw+(cw-bw)/2;let base=H-B;let seg='';
+    const parts=UORDER.filter(b=>d[b][key]>0);
+    parts.forEach((b,j)=>{const h=(H-B-T)*d[b][key]/top;const gap=j<parts.length-1?2:0;let yy=base-h;const hh=Math.max(1,h-gap);
+      const r=j===parts.length-1?Math.min(4,hh,bw/2):0;
+      seg+=r?'<path fill="'+color(b)+'" d="M'+x+','+(base)+'V'+(yy+r)+'Q'+x+','+yy+' '+(x+r)+','+yy+'H'+(x+bw-r)+'Q'+(x+bw)+','+yy+' '+(x+bw)+','+(yy+r)+'V'+base+'Z"/>'
+        :'<rect fill="'+color(b)+'" x="'+x+'" y="'+(base-hh)+'" width="'+bw+'" height="'+hh+'"/>';
+      base=yy;});
+    const lbl=((i%every===0&&n-1-i>=every/2)||i===n-1)?'<text class="ax" x="'+(x+bw/2)+'" y="'+(H-6)+'" text-anchor="middle">'+d.date.slice(5).replace('-','/')+'</text>':'';
+    g+='<g class="col" data-i="'+i+'"><rect class="hit" x="'+(L+i*cw)+'" y="'+T+'" width="'+cw+'" height="'+(H-B-T)+'" rx="4"/>'+seg+lbl+'</g>';});
+  box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+(key==='tokens'?'Tokens':'Messages')+' per day by assistant">'+g+'</svg><div class="tip"></div>';
+  const tip=box.querySelector('.tip');
+  box.querySelectorAll('.col').forEach(c=>{c.addEventListener('mousemove',e=>{const d=series[+c.dataset.i];const tot=UORDER.reduce((a,b)=>a+d[b][key],0);
+      tip.innerHTML='<b>'+new Date(d.date+'T12:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+'</b>'
+        +UORDER.map(b=>'<div><span class="bdot" style="background:'+color(b)+'"></span>'+NAMES[b]+'<em>'+fmtN(d[b][key])+'</em></div>').join('')
+        +'<div style="border-top:1px solid var(--line);margin-top:4px;padding-top:4px">Total<em>'+fmtN(tot)+'</em></div>';
+      tip.style.display='block';const r=box.getBoundingClientRect();let lx=e.clientX-r.left+14;if(lx+170>r.width)lx-=190;tip.style.left=lx+'px';tip.style.top=Math.max(0,e.clientY-r.top-40)+'px';});
+    c.addEventListener('mouseleave',()=>tip.style.display='none');});}
+$('#usebtn').onclick=()=>{$('#usage').showModal();loadUsage();};
+$('#u-range').onclick=e=>{const b=e.target.closest('button');if(!b)return;U.days=+b.dataset.d;store.set('u_days',U.days);loadUsage();};
+$('#u-metric').onclick=e=>{const b=e.target.closest('button');if(!b)return;U.metric=b.dataset.k;store.set('u_metric',U.metric);renderUsage();};
+$('#u-note').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a)post('/api/open',{url:a.dataset.href});});
+$('#u-clear').onclick=async()=>{if(!confirm('Clear all usage statistics? Chats and memories are not affected.'))return;await post('/api/usage',{action:'clear'});loadUsage();};
+addEventListener('resize',()=>{if($('#usage').open)renderUsage();});
 
 // ===== start =====
 CHAT=newChatState();setEmpty();paint();

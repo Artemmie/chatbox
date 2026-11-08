@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts
 import memory
+import usage as usagemod
 import vault as vaultmod
 
 HOME = os.path.expanduser("~")
@@ -27,6 +28,12 @@ TIMEOUT = 600  # seconds per reply
 
 
 DATA_DIR = os.environ.get("CHATBOX_DATA", os.path.join(HOME, ".local/share/chatbox"))
+
+# Apps opened from the macOS Finder (or some Linux menus) get a short PATH, so add the
+# usual places the tools are installed to. The assistants' child processes inherit it.
+_extra = [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+_path = os.environ.get("PATH", "").split(os.pathsep)
+os.environ["PATH"] = os.pathsep.join(_path + [d for d in _extra if os.path.isdir(d) and d not in _path])
 
 # Codex also ships inside the ChatGPT desktop app. A standalone `codex` on PATH wins;
 # otherwise use the app's copy from one of these places (or set CHATBOX_CODEX).
@@ -78,7 +85,7 @@ def build_codex_command(message, session_id, mode, model, chat=False):
 
 def parse_codex(out):
     """Codex prints one JSON event per line; collect the thread id, last reply and any error."""
-    session_id, reply, error = None, None, None
+    session_id, reply, error, usage = None, None, None, {}
     for line in out.splitlines():
         try:
             ev = json.loads(line)
@@ -89,6 +96,10 @@ def parse_codex(out):
             session_id = ev.get("thread_id")
         elif t == "item.completed" and ev.get("item", {}).get("type") == "agent_message":
             reply = ev["item"].get("text", "")
+        elif t == "turn.completed":
+            u = ev.get("usage") or {}
+            usage = {"input": u.get("input_tokens", 0), "cache_read": u.get("cached_input_tokens", 0),
+                     "output": u.get("output_tokens", 0), "reasoning": u.get("reasoning_output_tokens", 0)}
         elif t in ("error", "turn.failed"):
             msg = ev.get("message") or ev.get("error", {}).get("message", "Error")
             try:  # the message is often JSON from the server
@@ -97,8 +108,8 @@ def parse_codex(out):
                 pass
             error = msg
     if reply is not None:
-        return {"reply": reply, "session_id": session_id}
-    return {"error": error, "session_id": session_id} if error else None
+        return {"reply": reply, "session_id": session_id, "usage": usage}
+    return {"error": error, "session_id": session_id, "usage": usage} if error else None
 
 
 def build_command(backend, message, session_id, mode, model):
@@ -162,9 +173,26 @@ def run_turn(backend, message, session_id, mode, model, workdir):
             if data.get("is_error"):
                 return {"error": login_hint(backend, data.get("result") or "Error"),
                         "session_id": data.get("session_id")}
-            return {"reply": data.get("result", ""), "session_id": data.get("session_id")}
+            return {"reply": data.get("result", ""), "session_id": data.get("session_id"),
+                    "usage": json_usage(data)}
     err = (proc.stderr.strip() or out or f"Exited with code {proc.returncode}")[-2000:]
     return {"error": login_hint(backend, err)}
+
+
+def json_usage(data):
+    """Token counts (and Claude's cost) from a claude / cursor-agent JSON result."""
+    u = data.get("usage") or {}
+    pick = lambda *keys: next((u[k] for k in keys if isinstance(u.get(k), (int, float))), 0)
+    out = {"input": pick("input_tokens", "inputTokens"),
+           "output": pick("output_tokens", "outputTokens"),
+           "cache_read": pick("cache_read_input_tokens", "cacheReadTokens"),
+           "cache_write": pick("cache_creation_input_tokens", "cacheWriteTokens")}
+    if isinstance(data.get("total_cost_usd"), (int, float)):
+        out["cost"] = data["total_cost_usd"]
+    models = list((data.get("modelUsage") or {}).keys())
+    if models:
+        out["model"] = models[0]
+    return out
 
 
 def login_hint(backend, err):
@@ -236,6 +264,7 @@ def list_models(backend):
 
 ACCOUNTS = accounts.Accounts(find)
 MEMORY = memory.Store(DATA_DIR)
+USAGE = usagemod.Log(DATA_DIR)
 
 
 PLAN_PROMPT = (
@@ -290,8 +319,14 @@ def chat(req):
     if context:
         message = context + ("The user's message:\n" if not session_id
                              else "(Context updated.) The user's message:\n") + message
-    result = run_turn(req.get("backend"), message, session_id, req.get("mode", "ask"),
-                      (req.get("model") or "").strip(), req.get("workdir"))
+    backend, model = req.get("backend"), (req.get("model") or "").strip()
+    started = time.time()
+    result = run_turn(backend, message, session_id, req.get("mode", "ask"), model, req.get("workdir"))
+    if backend in usagemod.BACKENDS and not str(result.get("error", "")).startswith("Folder not found"):
+        if not model and backend in ("codex", "chatgpt") and codex_is_bundled():
+            model = CODEX_DEFAULT_MODEL
+        result["usage"] = USAGE.record(backend, req.get("mode", "ask"), model,
+                                       "reply" in result, time.time() - started, result.get("usage"))
     if result.get("reply") is not None:
         result["reply"], result["saved_memories"] = MEMORY.take_memories(result["reply"])
         result["context_version"] = MEMORY.version()  # the assistant already knows what it saved
@@ -408,6 +443,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(settings_payload()))
         if self.path == "/api/chats":
             return self._send(200, json.dumps(list_chats()))
+        m = re.match(r"^/api/usage(?:\?days=(\d+))?$", self.path)
+        if m:
+            return self._send(200, json.dumps(USAGE.summary(int(m.group(1) or 30))))
         m = re.match(r"^/api/chats/([a-f0-9]{12})$", self.path)
         if m:
             chat = load_chat(m.group(1))
@@ -467,6 +505,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(settings_payload()))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+        if self.path == "/api/usage" and req.get("action") == "clear":
+            USAGE.clear()
+            return self._send(200, json.dumps(USAGE.summary(30)))
         if self.path == "/api/chats":
             try:
                 if req.get("action") == "save":

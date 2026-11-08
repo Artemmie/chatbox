@@ -19,6 +19,7 @@ OBSIDIAN_CONFIGS = [
     "~/.config/obsidian/obsidian.json",
     "~/.var/app/md.obsidian.Obsidian/config/obsidian/obsidian.json",  # Flatpak
     "~/snap/obsidian/current/.config/obsidian/obsidian.json",          # Snap
+    "~/Library/Application Support/obsidian/obsidian.json",            # macOS
 ]
 WORD = re.compile(r"\w{3,}", re.UNICODE)
 STOP = set("""the and for are but not you your with this that have from what when where which

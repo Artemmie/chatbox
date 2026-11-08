@@ -1,6 +1,6 @@
 # Chatbox
 
-One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux — using the subscriptions you already pay for. No API keys.
+One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux and macOS — using the subscriptions you already pay for. No API keys.
 
 A clean, modern chat window: sidebar with your saved chats, a centered conversation with proper formatting (headings, lists, tables, code with a Copy button), and one composer where you pick the assistant, mode, model and folder. Switch assistants mid-conversation — each keeps its own part of the chat.
 
@@ -30,13 +30,14 @@ Usage counts toward each service's plan, exactly as if you used its own app.
 - **Shared memory** – save facts once ("I use Unity 6 and C#", "answer in Russian") and every assistant gets them at the start of each chat. Add them in **Settings**, type `/remember …`, click **Remember** under any message, or let the assistant save new facts by itself (with **Undo**).
 - **Custom instructions** – one place to tell all four assistants how to reply.
 - **Obsidian as long-term memory** – connect your vault (Accounts → Obsidian; vaults are detected automatically). Memories then live in `Chatbox/Memories.md` in your vault, shared by every assistant and editable in Obsidian. Notes related to your message are found and given to the assistant, and **Save to Obsidian** stores a whole chat in `Chatbox/Chats/`.
+- **Usage** – messages, tokens, reply time and (for Claude) cost per assistant and model, with a daily chart and a 7 / 30 day / all-time view. Each reply also shows its tokens, time and cost. Subscription limits aren't visible to the command-line tools, so they aren't shown.
 - **Accounts screen** – see what's connected and **Install / Sign in / Sign out** each service without a terminal. Sign-in happens in your browser; Chatbox never sees your password.
-- **Desktop app** – menu entry, icon and its own window.
+- **Desktop app** – its own window and icon: a menu entry on Linux, `Chatbox.app` on macOS.
 
 ## Requirements
 
-- Linux with a desktop (tested on KDE Plasma / Wayland)
-- Python 3.10+
+- Linux with a desktop (tested on KDE Plasma / Wayland), or macOS (Apple silicon or Intel; new, not yet tested on a real Mac)
+- Python 3.10+ (on macOS: `xcode-select --install`, or python.org / Homebrew)
 - A subscription for each assistant you want: Cursor account, Claude Pro or Max, ChatGPT (Plus/Pro, or free with limits)
 
 ## Install
@@ -47,7 +48,7 @@ cd chatbox
 ./install.sh
 ```
 
-Then open **Chatbox** from your app menu. On first start the **Accounts** screen opens: click **Install** and **Sign in** for the services you use.
+Then open **Chatbox** from your app menu (Linux) or from Launchpad / `~/Applications` (macOS). On first start the **Accounts** screen opens: click **Install** and **Sign in** for the services you use.
 
 Options:
 
@@ -55,7 +56,7 @@ Options:
 |---|---|
 | `./install.sh` | Own window. Downloads PyQt6 + Qt WebEngine (~150 MB) into a private venv. |
 | `./install.sh --browser` | No extra downloads. Opens Chatbox in your web browser. |
-| `./install.sh --distrobox NAME` | Menu entry runs Chatbox inside a distrobox container. |
+| `./install.sh --distrobox NAME` | Linux only: menu entry runs Chatbox inside a distrobox container. |
 
 Quick try without installing:
 
@@ -82,6 +83,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 - In **Agent** mode the assistant can change files in the chosen folder — use it on folders you trust.
 - ChatGPT mode always runs read-only from an empty folder.
 - With Obsidian connected, notes that match your message are sent to the assistant you are chatting with (turn off in **Settings**). Chatbox only writes inside `Chatbox/` in your vault, plus `plans/` in the project folder you choose.
+- Usage statistics are stored locally in `~/.local/share/chatbox/usage.jsonl` (no message text, only counts). Clear them in **Usage**.
 - Chats are saved locally in `~/.local/share/chatbox/chats/` (one JSON file each). Delete them from the sidebar.
 - Memories and custom instructions are stored locally in `~/.local/share/chatbox/memories.json` and `settings.json`. They are sent only to the assistant you are chatting with, at the start of a chat (or when they change). Turn this off in **Settings**.
 
@@ -93,6 +95,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 | `ui.html` | The interface (single page, no external files) |
 | `accounts.py` | Status, install, sign-in and sign-out for each tool |
 | `memory.py` | Settings, memories and custom instructions |
+| `usage.py` | Usage log and summaries for the Usage screen |
 | `vault.py` | Obsidian vault: detection, memory note, note search, saving chats |
 | `app.py` | Desktop window (PyQt6 WebEngine) |
 | `install.sh` / `uninstall.sh` | Per-user install, no root needed |

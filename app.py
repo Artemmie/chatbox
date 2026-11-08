@@ -17,9 +17,32 @@ from PyQt6.QtCore import QUrl  # noqa: E402
 from PyQt6.QtGui import QIcon  # noqa: E402
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile  # noqa: E402
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 PORT = 8766  # fixed so saved settings survive restarts; any free port if taken
+
+
+class Window(QWebEngineView):
+    """The Chatbox window. Asks before closing while an install / sign-in is still running,
+    because closing stops it (that's how an unfinished sign-in gets lost)."""
+
+    def closeEvent(self, event):
+        busy = [chatbox.accounts.SERVICES[s]["name"] for s, j in chatbox.ACCOUNTS.jobs.items()
+                if j.state == "running"]
+        if busy:
+            what = {"login": "sign-in", "install": "install", "logout": "sign-out"}
+            kinds = {what.get(chatbox.ACCOUNTS.jobs[s].kind, "task") for s in chatbox.ACCOUNTS.jobs
+                     if chatbox.ACCOUNTS.jobs[s].state == "running"}
+            answer = QMessageBox.question(
+                self, "Close Chatbox?",
+                f"{' and '.join(busy)} {'/'.join(sorted(kinds))} is still in progress.\n\n"
+                "Closing Chatbox stops it. Close anyway?",
+                QMessageBox.StandardButton.Close | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Close:
+                event.ignore()
+                return
+        event.accept()
 
 
 def start_server():
@@ -43,7 +66,7 @@ def main():
     profile.setPersistentStoragePath(os.path.join(chatbox.DATA_DIR, "profile"))
     profile.setCachePath(os.path.join(chatbox.DATA_DIR, "profile", "cache"))
 
-    view = QWebEngineView()
+    view = Window()
     view.setPage(QWebEnginePage(profile, view))
     view.setWindowTitle("Chatbox")
     view.resize(1000, 760)
