@@ -9,7 +9,7 @@ import os
 import threading
 import time
 
-BACKENDS = ["claude", "cursor", "codex", "chatgpt"]  # fixed order = chart order
+BACKENDS = ["claude", "cursor", "codex", "chatgpt", "ollama"]  # fixed order = chart order
 
 
 class Log:

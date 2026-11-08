@@ -22,6 +22,7 @@ DEFAULTS = {
     "vault_path": "",       # connected Obsidian vault ("" = none)
     "memory_in_vault": True,  # keep memories in the vault's Chatbox/Memories.md
     "vault_search": True,   # give the assistant notes related to each message
+    "ollama_url": "http://localhost:11434",  # where the Ollama server runs
 }
 REMEMBER = re.compile(r"^[ \t>*_-]*REMEMBER:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -100,6 +101,8 @@ class Store:
                     s[k] = bool(v)
                 elif k == "vault_path":
                     s[k] = str(v)
+                elif k == "ollama_url":
+                    s[k] = str(v).strip()[:500]
                 elif k == "instructions":
                     s[k] = str(v)[:4000]
             self._save(self.settings_path, s)

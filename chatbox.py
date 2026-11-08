@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Chatbox: one chat window for Cursor, Claude, Codex and ChatGPT, using your own subscriptions.
+"""Chatbox: one chat window for Cursor, Claude, Codex, ChatGPT and local Ollama models.
 
 Runs a small local web server (127.0.0.1 only) and opens it in your browser
 (or in its own window via app.py). Each message is sent to the `cursor-agent`,
-`claude` or `codex` command-line tool. Standard library only.
+`claude` or `codex` command-line tool, or to a local Ollama server. Standard library only.
 
 Usage:  python3 chatbox.py [--port 8765] [--no-browser]
 """
@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts
 import memory
+import ollama
 import usage as usagemod
 import vault as vaultmod
 
@@ -144,6 +145,8 @@ def build_command(backend, message, session_id, mode, model):
 
 
 def run_turn(backend, message, session_id, mode, model, workdir):
+    if backend == "ollama":  # an HTTP server, not a command-line tool
+        return ollama.run_turn(ollama_url(), OLLAMA, message, session_id, model, TIMEOUT)
     cmd = build_command(backend, message, session_id, mode, model)
     workdir = os.path.expanduser(workdir or HOME)
     if backend == "chatgpt":  # plain chat: no project folder
@@ -238,6 +241,8 @@ def list_models(backend):
         return CLAUDE_MODELS
     if backend in ("codex", "chatgpt"):
         return CODEX_MODELS if codex_is_bundled() else codex_cached_models()
+    if backend == "ollama":  # asked fresh each time: it's fast, and you may have just pulled one
+        return ollama.list_models(ollama_url())
     if backend != "cursor":
         return []
     if "cursor" not in _model_cache:
@@ -265,6 +270,11 @@ def list_models(backend):
 ACCOUNTS = accounts.Accounts(find)
 MEMORY = memory.Store(DATA_DIR)
 USAGE = usagemod.Log(DATA_DIR)
+OLLAMA = ollama.Sessions(DATA_DIR)
+
+
+def ollama_url():
+    return MEMORY.settings()["ollama_url"]
 
 
 PLAN_PROMPT = (
@@ -279,10 +289,10 @@ PLAN_FILES = set()  # plan files Chatbox wrote this run (the page may open these
 
 def save_plan(reply, backend, workdir):
     """Save a plan reply as Markdown. Folder-based assistants: <folder>/plans/.
-    ChatGPT (no folder): the Obsidian vault's Chatbox/Plans, else Chatbox's data folder."""
+    ChatGPT / Ollama (no folder): the Obsidian vault's Chatbox/Plans, else Chatbox's data folder."""
     m = re.search(r"^#\s+(.+)$", reply, re.MULTILINE)
     title = re.sub(r"[\\/:*?\"<>|#`\n\r\t]+", " ", m.group(1) if m else "Plan").strip()[:60] or "Plan"
-    if backend == "chatgpt":
+    if backend in ("chatgpt", "ollama"):  # no project folder
         v = MEMORY.vault()
         folder = os.path.join(v.path, "Chatbox", "Plans") if v else os.path.join(DATA_DIR, "plans")
     else:
@@ -451,7 +461,8 @@ class Handler(BaseHTTPRequestHandler):
             chat = load_chat(m.group(1))
             return self._send(200 if chat else 404, json.dumps(chat or {"error": "not found"}))
         if self.path.startswith("/api/accounts"):
-            return self._send(200, json.dumps(ACCOUNTS.status(fresh="fresh=1" in self.path)))
+            return self._send(200, json.dumps(ACCOUNTS.status(fresh="fresh=1" in self.path)
+                                              + [ollama.status(ollama_url())]))
         self._send(404, '{"error":"not found"}')
 
     def do_POST(self):

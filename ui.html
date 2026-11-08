@@ -7,13 +7,13 @@
   --bg:#faf9f5;--side:#f3f1ea;--panel:#ffffff;--text:#1f1e1d;--muted:#6f6d66;--faint:#9a988f;
   --line:#e6e3da;--line2:#d9d5ca;--hover:rgba(31,30,29,.06);--you:#efece3;--code:#f5f3ee;
   --accent:#c96442;--err:#b3261e;--ok:#1f8a5b;--shadow:0 1px 2px rgba(0,0,0,.04),0 6px 24px rgba(0,0,0,.06);
-  --cursor:#2a78d6;--claude:#c96442;--codex:#10a37f;--chatgpt:#6e56cf;
+  --cursor:#2a78d6;--claude:#c96442;--codex:#10a37f;--chatgpt:#6e56cf;--ollama:#c0407a;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#262624;--side:#1f1e1d;--panel:#30302e;--text:#f5f4ef;--muted:#a6a49c;--faint:#7d7b74;
   --line:#3a3936;--line2:#4a4945;--hover:rgba(255,255,255,.06);--you:#3a3936;--code:#1c1c1b;
   --accent:#d97757;--err:#f2b8b5;--ok:#5fd39b;--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px rgba(0,0,0,.35);
-  --cursor:#3f86e0;--claude:#d06a48;--codex:#12a07a;--chatgpt:#8a74ea;
+  --cursor:#3f86e0;--claude:#d06a48;--codex:#12a07a;--chatgpt:#8a74ea;--ollama:#e0679e;
 }}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -167,7 +167,7 @@ dialog.wide{width:min(880px,calc(100vw - 32px))}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;padding:2px;gap:2px}
 .seg button{border:0;background:transparent;border-radius:8px;padding:4px 12px;font-size:13px;color:var(--muted);cursor:pointer}
 .seg button.on{background:var(--hover);color:var(--text);font-weight:500}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
 .tile{border:1px solid var(--line);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:2px}
 .tile .tn{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
 .tile .big{font-size:26px;font-weight:600;letter-spacing:-.01em;line-height:1.2;color:var(--text)}
@@ -337,7 +337,7 @@ code.path{font:12px ui-monospace,monospace;color:var(--muted);word-break:break-a
 <dialog id="acc">
   <div class="dlg-h"><h2>Accounts</h2><button class="icon" data-close title="Close">✕</button></div>
   <div class="dlg-b">
-    <p class="intro">Chatbox uses your own subscriptions. Install each tool once and sign in — sign-in happens in your browser, and Chatbox never sees your password.</p>
+    <p class="intro">Chatbox uses your own subscriptions. Install each tool once and sign in — sign-in happens in your browser, and Chatbox never sees your password. Ollama runs models on your own computer and needs no account.</p>
     <div id="acclist" style="display:flex;flex-direction:column;gap:12px"><p class="muted">Checking accounts…</p></div>
     <div id="obs" class="sec"></div>
   </div>
@@ -346,13 +346,14 @@ code.path{font:12px ui-monospace,monospace;color:var(--muted);word-break:break-a
 <script>
 // ===== basics =====
 const $=s=>document.querySelector(s), thread=$('#thread');
-const NAMES={cursor:'Cursor',claude:'Claude',codex:'Codex',chatgpt:'ChatGPT'},BACKENDS=Object.keys(NAMES);
-const INITIAL={cursor:'C',claude:'A',codex:'X',chatgpt:'G'};
-const SVC={cursor:'cursor',claude:'claude',codex:'codex',chatgpt:'codex'};
+const NAMES={cursor:'Cursor',claude:'Claude',codex:'Codex',chatgpt:'ChatGPT',ollama:'Ollama'},BACKENDS=Object.keys(NAMES);
+const INITIAL={cursor:'C',claude:'A',codex:'X',chatgpt:'G',ollama:'O'};
+const SVC={cursor:'cursor',claude:'claude',codex:'codex',chatgpt:'codex',ollama:'ollama'};
+const NOFOLDER=b=>b==='chatgpt'||b==='ollama'; // plain chat: no files, no Agent mode
 const MODES={ask:['Ask','Answers questions. Can read files, changes nothing.'],
   plan:['Plan','Writes a step-by-step plan as a .md file first.'],
   agent:['Agent','Edits files and runs commands in the folder.']};
-const fresh=()=>({cursor:null,claude:null,codex:null,chatgpt:null});
+const fresh=()=>({cursor:null,claude:null,codex:null,chatgpt:null,ollama:null});
 const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
 const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const post=(url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
@@ -431,7 +432,7 @@ function render(item){ // one stored item -> DOM
         :'<div class="md">'+md(item.t)+'</div>'+actionsHTML())+'</div>';}
   else if(item.r==='plan'){d.className='card';
     d.innerHTML='<div class="ic">'+ICON.plan+'</div><div class="tx"><b>Plan saved</b><span title="'+esc(item.path)+'">'+esc(item.path)+'</span></div>'
-      +'<button class="ghost" type="button" data-planopen>Open</button>'+(item.b==='chatgpt'?'':'<button class="btn" type="button" data-plango>Implement plan</button>');}
+      +'<button class="ghost" type="button" data-planopen>Open</button>'+(NOFOLDER(item.b)?'':'<button class="btn" type="button" data-plango>Implement plan</button>');}
   else{d.className='note';d.innerHTML=esc(item.t)+(item.memId?' <button type="button" data-undo>Undo</button>':'');}
   thread.appendChild(d);return d;}
 function addItem(item,save=true){CHAT.items.push(item);const d=render(item);setEmpty();scrollDown();if(save)saveChat();return d;}
@@ -495,12 +496,13 @@ function paint(){
   const b=S.backend;
   pick('#p-backend','<span class="bdot" style="background:'+color(b)+'"></span><span class="lbl">'+NAMES[b]+'</span>'+ICON.chev,
     '<div class="mh">Assistant</div>'+BACKENDS.map(x=>{const ok=ready(x);const a=ACC[SVC[x]];
-      const sub=!ok?(a&&!a.installed?'Not installed':'Not connected')+' — set up in Accounts':x==='chatgpt'?'Plain chat, no files':x==='codex'?'Coding agent by OpenAI':x==='claude'?'Claude Code by Anthropic':'Cursor agent';
+      const sub=!ok?(x==='ollama'?(a&&a.installed?'No models yet':'Not running')+' — see Accounts':(a&&!a.installed?'Not installed':'Not connected')+' — set up in Accounts')
+        :x==='ollama'?'Local models, plain chat':x==='chatgpt'?'Plain chat, no files':x==='codex'?'Coding agent by OpenAI':x==='claude'?'Claude Code by Anthropic':'Cursor agent';
       return '<button type="button" class="mi'+(x===b?' sel':'')+'" data-b="'+x+'"'+(ok?'':' disabled')+'><span class="bdot" style="background:'+color(x)+'"></span><span class="mt"><b>'+NAMES[x]+'</b><span>'+sub+'</span></span>'+ICON.check+'</button>';}).join('')
       +'<button type="button" class="mi" data-openacc><span class="mt"><span>Manage accounts…</span></span></button>');
-  const chat=b==='chatgpt';if(chat&&S.mode==='agent')S.mode='ask';
+  const chat=NOFOLDER(b);if(chat&&S.mode==='agent')S.mode='ask';
   pick('#p-mode','<span class="lbl">'+MODES[S.mode][0]+'</span>'+ICON.chev,
-    '<div class="mh">Mode</div>'+Object.entries(MODES).map(([k,[n,d]])=>'<button type="button" class="mi'+(k===S.mode?' sel':'')+'" data-m="'+k+'"'+(chat&&k==='agent'?' disabled':'')+'><span class="mt"><b>'+n+'</b><span>'+(chat&&k==='agent'?'Not available for ChatGPT':d)+'</span></span>'+ICON.check+'</button>').join(''));
+    '<div class="mh">Mode</div>'+Object.entries(MODES).map(([k,[n,d]])=>'<button type="button" class="mi'+(k===S.mode?' sel':'')+'" data-m="'+k+'"'+(chat&&k==='agent'?' disabled':'')+'><span class="mt"><b>'+n+'</b><span>'+(chat&&k==='agent'?'Not available for '+NAMES[b]:d)+'</span></span>'+ICON.check+'</button>').join(''));
   $('#folderbtn').hidden=chat;
   $('#folderlbl').textContent=(S.workdir||S.home).replace(/\/+$/,'').split('/').pop()||'/';
   $('#folderbtn').title='Working folder: '+(S.workdir||S.home);
@@ -529,7 +531,7 @@ function currentModel(){const list=Array.isArray(modelCache[S.backend])?modelCac
 function paintModels(){const list=modelCache[S.backend];const cur=currentModel();
   const label=list==='loading'?'Loading…':cur?((list.find(m=>m[0]===cur)||[cur,cur])[1]):'Auto';
   pick('#p-model','<span class="lbl">'+esc(label)+'</span>'+ICON.chev,
-    '<div class="mh">Model</div><button type="button" class="mi'+(cur?'':' sel')+'" data-model=""><span class="mt"><b>Auto</b><span>Let '+NAMES[S.backend]+' choose</span></span>'+ICON.check+'</button>'
+    '<div class="mh">Model</div><button type="button" class="mi'+(cur?'':' sel')+'" data-model=""><span class="mt"><b>Auto</b><span>'+(S.backend==='ollama'?'Your most recently downloaded model':'Let '+NAMES[S.backend]+' choose')+'</span></span>'+ICON.check+'</button>'
     +(Array.isArray(list)?list.map(([id,l])=>'<button type="button" class="mi'+(id===cur?' sel':'')+'" data-model="'+esc(id)+'"><span class="mt"><b>'+esc(l)+'</b></span>'+ICON.check+'</button>').join(''):''));}
 $('#p-model').addEventListener('click',e=>{const t=e.target.closest('.mi');if(!t)return;store.set('model_'+S.backend,t.dataset.model);paintModels();$('#p-model').classList.remove('open');});
 
@@ -570,7 +572,8 @@ async function send(text){
   clearInterval(tick);pend.remove();S.busy=false;
   if(r.session_id)CHAT.sessions[b]=r.session_id;
   if(r.context_version!==undefined)CHAT.ctx[b]=r.context_version;
-  const label=model?((Array.isArray(modelCache[b])&&modelCache[b].find(m=>m[0]===model)||[model,model])[1]):'';
+  const label=b==='ollama'?(r.usage&&r.usage.model||model) // just the name (and what "Auto" picked)
+    :model?((Array.isArray(modelCache[b])&&modelCache[b].find(m=>m[0]===model)||[model,model])[1]):'';
   const u=r.usage?{tok:(r.usage.input||0)+(r.usage.output||0),s:r.usage.seconds,cost:r.usage.cost}:null;
   if(r.error)addItem({r:'err',t:r.error,b,mode});
   else addItem({r:'bot',t:r.reply||'(empty reply)',b,mode,model:label,u});
@@ -640,8 +643,20 @@ async function refreshAccounts(fresh){
   clearTimeout(accTimer);
   if($('#acc').open)accTimer=setTimeout(()=>refreshAccounts(),list.some(a=>a.job&&a.job.state==='running')?1500:15000);
   return list;}
+let ollamaTyped=null; // address being typed (survives the list refreshing)
+function ollamaCard(a){
+  const st=!a.installed?['bad','Not running']:a.models?['ok','Running · '+esc(a.account)]:['bad','Running · no models yet'];
+  let h='<div class="sec"><div class="sec-h"><span class="bdot" style="background:var(--ollama)"></span><b>Ollama</b><span class="pill '+st[0]+'">'+st[1]+'</span></div>'
+    +'<div class="muted">'+esc(a.plan)+'. Plain chat: no files or commands.</div>';
+  if(!a.installed)h+='<div class="muted">Install Ollama and start it, then click “Check again”.</div>'
+    +'<div class="row"><button class="btn" data-act="open" data-url="https://ollama.com/download">Get Ollama</button><button class="ghost" data-act="ollamacheck">Check again</button></div>';
+  else if(!a.models)h+='<div class="muted">Download a model in a terminal, then click “Check again”. For example:</div>'
+    +'<div class="row"><code>ollama pull llama3.2</code><button class="ghost" data-act="copycode" data-code="ollama pull llama3.2">Copy</button><button class="ghost" data-act="ollamacheck">Check again</button></div>';
+  else h+='<div class="row"><button class="ghost" data-act="ollamacheck">Refresh models</button></div>';
+  h+='<form class="row" id="ollamaform"><span class="muted">Address</span><input class="field" id="ollamaurl" value="'+esc(ollamaTyped??a.url)+'" placeholder="http://localhost:11434" style="flex:1;min-width:200px"><button class="ghost">Save</button></form></div>';
+  return h;}
 function renderAccounts(list){
-  $('#acclist').innerHTML=list.map(a=>{
+  $('#acclist').innerHTML=list.map(a=>{if(a.id==='ollama')return ollamaCard(a);
     const st=!a.installed?['bad','Not installed']:a.logged_in?['ok','Connected'+(a.account?' · '+esc(a.account):'')]:['bad','Not signed in'];
     const busy=a.job&&a.job.state==='running';const dis=busy?' disabled':'';
     let btns='';
@@ -672,12 +687,17 @@ function renderAccounts(list){
     return '<div class="sec"><div class="sec-h">'+dots+'<b>'+esc(a.name)+'</b><span class="pill '+st[0]+'">'+st[1]+'</span></div>'
       +'<div class="muted">Needs: '+esc(a.plan)+(a.source?' · Codex '+esc(a.source):'')+'</div>'
       +'<div class="row">'+btns+'</div>'+job+'</div>';}).join('');}
-$('#acclist').addEventListener('input',e=>{if(e.target.id&&e.target.id.startsWith('code_'))codes[e.target.id.slice(5)]=e.target.value;});
+$('#acclist').addEventListener('input',e=>{if(e.target.id==='ollamaurl')ollamaTyped=e.target.value;if(e.target.id&&e.target.id.startsWith('code_'))codes[e.target.id.slice(5)]=e.target.value;});
 $('#acclist').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id&&e.target.id.startsWith('code_')){e.preventDefault();e.target.nextElementSibling.click();}});
+function ollamaRefresh(){delete modelCache.ollama;if(S.backend==='ollama')loadModels();accJSON='';return refreshAccounts(true);}
+$('#acclist').addEventListener('submit',async e=>{if(e.target.id!=='ollamaform')return;e.preventDefault();
+  const r=await post('/api/settings',{settings:{ollama_url:$('#ollamaurl').value.trim()}});if(r.error)alert(r.error);
+  ollamaTyped=null;ollamaRefresh();});
 $('#acclist').addEventListener('click',async e=>{
   const t=e.target.closest('[data-act]');if(!t)return;const act=t.dataset.act,s=t.dataset.s,name=ACC[s]&&ACC[s].name;
   if(act==='open'){post('/api/open',{url:t.dataset.url});return;}
   if(act==='copycode'){copy(t.dataset.code,t);return;}
+  if(act==='ollamacheck'){t.disabled=true;ollamaRefresh();return;}
   if(act==='install'&&!confirm('Download and run the official '+name+' installer?'))return;
   if(act==='logout'&&!confirm('Sign out of '+name+' on this computer?'+(s==='codex'?'\n\nThis also signs out Codex in the ChatGPT app.':'')))return;
   const body={service:s,action:act};
@@ -691,7 +711,7 @@ $('#acc').addEventListener('close',()=>{clearTimeout(accTimer);refreshAccounts(t
 
 
 // ===== Usage =====
-const UORDER=['claude','cursor','codex','chatgpt']; // fixed chart order (validated palette)
+const UORDER=['claude','cursor','codex','chatgpt','ollama']; // fixed chart order (validated palette)
 const fmtN=n=>n>=1e6?(n/1e6).toFixed(n>=1e7?0:1)+'M':n>=1e3?(n/1e3).toFixed(n>=1e4?0:1)+'k':String(Math.round(n));
 const fmtS=s=>s>=90?Math.round(s/60)+'m':s>=10?Math.round(s)+'s':(Math.round(s*10)/10)+'s';
 const fmt$=c=>'$'+(c>=100?c.toFixed(0):c>=1?c.toFixed(2):c.toFixed(3));

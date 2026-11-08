@@ -1,6 +1,6 @@
 # Chatbox
 
-One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux and macOS — using the subscriptions you already pay for. No API keys.
+One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux and macOS — using the subscriptions you already pay for. No API keys. Plus your own local models through **Ollama**.
 
 A clean, modern chat window: sidebar with your saved chats, a centered conversation with proper formatting (headings, lists, tables, code with a Copy button), and one composer where you pick the assistant, mode, model and folder. Switch assistants mid-conversation — each keeps its own part of the chat.
 
@@ -16,22 +16,24 @@ chatbox.py (local server on 127.0.0.1)
       ├── Cursor  → cursor-agent  → your Cursor account
       ├── Claude  → claude        → your Claude Pro/Max subscription
       ├── Codex   → codex         → your ChatGPT account
-      └── ChatGPT → codex, as a plain chat (no files, no commands)
+      ├── ChatGPT → codex, as a plain chat (no files, no commands)
+      └── Ollama  → Ollama's local server (http://localhost:11434) → models on your computer
 ```
 
 Usage counts toward each service's plan, exactly as if you used its own app.
 
 ## Features
 
-- **Four assistants**, one window. Assistants that aren't connected are greyed out until you sign in.
+- **Four assistants plus local models**, one window. Assistants that aren't connected are greyed out until you sign in.
 - **Chat history** – every chat is saved and listed in the sidebar (Today, Yesterday, …). Reopen one and keep going: each assistant resumes its own session, in the chat's own folder.
 - **Ask / Plan / Agent** – *Ask* answers and may read files. *Plan* writes an implementation plan and saves it as a Markdown file (`<folder>/plans/…md`) for you to review — nothing is changed yet. Click **Implement plan** to hand it to *Agent*, which edits files and runs commands and ticks off the plan's checklist as it goes.
 - **Model picker** – *Auto*, or any model your plan offers (Cursor's list is loaded live).
 - **Shared memory** – save facts once ("I use Unity 6 and C#", "answer in Russian") and every assistant gets them at the start of each chat. Add them in **Settings**, type `/remember …`, click **Remember** under any message, or let the assistant save new facts by itself (with **Undo**).
-- **Custom instructions** – one place to tell all four assistants how to reply.
+- **Custom instructions** – one place to tell every assistant how to reply.
 - **Obsidian as long-term memory** – connect your vault (Accounts → Obsidian; vaults are detected automatically). Memories then live in `Chatbox/Memories.md` in your vault, shared by every assistant and editable in Obsidian. Notes related to your message are found and given to the assistant, and **Save to Obsidian** stores a whole chat in `Chatbox/Chats/`.
 - **Usage** – messages, tokens, reply time and (for Claude) cost per assistant and model, with a daily chart and a 7 / 30 day / all-time view. Each reply also shows its tokens, time and cost. Subscription limits aren't visible to the command-line tools, so they aren't shown.
 - **Accounts screen** – see what's connected and **Install / Sign in / Sign out** each service without a terminal. Sign-in happens in your browser; Chatbox never sees your password.
+- **Local models (Ollama)** – every model you've pulled or built with Ollama (`ollama pull qwen3:8b`, or your own from a Modelfile) shows up in the Model menu. *Auto* uses the one you downloaded or changed most recently. It's a plain chat like ChatGPT mode: Ask and Plan, no files or commands. Ollama doesn't remember conversations, so Chatbox keeps each one in `~/.local/share/chatbox/ollama/` and sends the history with every message. The server address (default `http://localhost:11434`, or another computer on your network) is set in Accounts → Ollama.
 - **Desktop app** – its own window and icon: a menu entry on Linux, `Chatbox.app` on macOS.
 
 ## Requirements
@@ -73,6 +75,7 @@ Uninstall with `./uninstall.sh` (your sign-ins and the tools stay).
 | Cursor | `cursor-agent` | `https://cursor.com/install` |
 | Claude | `claude` (Claude Code) | `https://claude.ai/install.sh` |
 | Codex & ChatGPT | `codex` | OpenAI's GitHub releases → `~/.local/bin/codex` |
+| Ollama | Ollama's local server (no command-line tool needed) | Not installed by Chatbox — get it from `https://ollama.com/download` |
 
 If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled inside it (set `CHATBOX_CODEX=/path/to/codex` if it isn't found). That copy may be older and accept fewer models.
 
@@ -82,6 +85,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 - Chatbox stores no passwords, tokens or API keys. Each tool keeps its own sign-in in its usual place.
 - In **Agent** mode the assistant can change files in the chosen folder — use it on folders you trust.
 - ChatGPT mode always runs read-only from an empty folder.
+- Ollama chats go only to the Ollama address you set (your own computer by default). If you point it at another computer, messages travel over your network unencrypted unless that address uses `https://`.
 - With Obsidian connected, notes that match your message are sent to the assistant you are chatting with (turn off in **Settings**). Chatbox only writes inside `Chatbox/` in your vault, plus `plans/` in the project folder you choose.
 - Usage statistics are stored locally in `~/.local/share/chatbox/usage.jsonl` (no message text, only counts). Clear them in **Usage**.
 - Chats are saved locally in `~/.local/share/chatbox/chats/` (one JSON file each). Delete them from the sidebar.
@@ -96,6 +100,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 | `accounts.py` | Status, install, sign-in and sign-out for each tool |
 | `memory.py` | Settings, memories and custom instructions |
 | `usage.py` | Usage log and summaries for the Usage screen |
+| `ollama.py` | Ollama: model list, status, and chats with locally saved history |
 | `vault.py` | Obsidian vault: detection, memory note, note search, saving chats |
 | `app.py` | Desktop window (PyQt6 WebEngine) |
 | `install.sh` / `uninstall.sh` | Per-user install, no root needed |

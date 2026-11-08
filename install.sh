@@ -34,7 +34,7 @@ if [ -n "$BOX" ] && [ "$OS" = Darwin ]; then echo "--distrobox is for Linux only
 
 echo "Installing Chatbox to $D"
 mkdir -p "$D"
-cp "$SRC"/chatbox.py "$SRC"/accounts.py "$SRC"/memory.py "$SRC"/vault.py "$SRC"/usage.py "$SRC"/ui.html "$SRC"/app.py "$SRC"/chatbox.svg "$D"/
+cp "$SRC"/chatbox.py "$SRC"/accounts.py "$SRC"/memory.py "$SRC"/vault.py "$SRC"/usage.py "$SRC"/ollama.py "$SRC"/ui.html "$SRC"/app.py "$SRC"/chatbox.svg "$D"/
 
 has_qt() { "$D/venv/bin/python" -c "import PyQt6.QtWebEngineWidgets" 2>/dev/null; }
 
