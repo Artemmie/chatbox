@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install Chatbox for the current user and add it to the app menu (Linux)
-# or to ~/Applications as Chatbox.app (macOS).
+# or to /Applications as Chatbox.app (macOS; ~/Applications if /Applications isn't writable).
 #
 #   ./install.sh                     own window (installs PyQt6 into a private venv)
 #   ./install.sh --browser           no extra downloads; opens in your web browser
@@ -82,9 +82,12 @@ EOF
 chmod +x "$D/run.sh"
 
 if [ "$OS" = Darwin ]; then
-  # macOS: a small Chatbox.app in ~/Applications that starts run.sh.
-  APP="$HOME/Applications/Chatbox.app"
-  rm -rf "$APP"
+  # macOS: a small Chatbox.app that starts run.sh. /Applications is what Finder and
+  # Launchpad show; admin users can write there without sudo.
+  APPDIR=/Applications
+  [ -w "$APPDIR" ] || { APPDIR="$HOME/Applications"; mkdir -p "$APPDIR"; }
+  APP="$APPDIR/Chatbox.app"
+  rm -rf "$APP" "$HOME/Applications/Chatbox.app"   # also drop a copy from an older install
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   printf '#!/bin/sh\nexec "%s/run.sh"\n' "$D" > "$APP/Contents/MacOS/Chatbox"
   chmod +x "$APP/Contents/MacOS/Chatbox"
@@ -114,7 +117,10 @@ PLIST
   fi
   rm -rf "$T"
   touch "$APP"
-  echo "Done ($MODE mode). Open Chatbox from Launchpad or ~/Applications, or run: $D/run.sh"
+  # register it so Spotlight and Launchpad pick it up right away
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
+  echo "Done ($MODE mode). Chatbox is in $APPDIR - open it from there, Launchpad or Spotlight (Cmd+Space, \"Chatbox\")."
+  echo "Or run: $D/run.sh"
   echo "On first start, use Accounts (bottom left) to install the tools and sign in."
   exit 0
 fi

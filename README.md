@@ -37,7 +37,7 @@ Usage counts toward each service's plan, exactly as if you used its own app.
 ## Requirements
 
 - Linux with a desktop (tested on KDE Plasma / Wayland), or macOS (Apple silicon or Intel; new, not yet tested on a real Mac)
-- Python 3.10+ (on macOS: `xcode-select --install`, or python.org / Homebrew)
+- Python 3.9+ (on macOS: `xcode-select --install`, or python.org / Homebrew)
 - A subscription for each assistant you want: Cursor account, Claude Pro or Max, ChatGPT (Plus/Pro, or free with limits)
 
 ## Install
@@ -48,7 +48,7 @@ cd chatbox
 ./install.sh
 ```
 
-Then open **Chatbox** from your app menu (Linux) or from Launchpad / `~/Applications` (macOS). On first start the **Accounts** screen opens: click **Install** and **Sign in** for the services you use.
+Then open **Chatbox** from your app menu (Linux) or from Applications / Launchpad / Spotlight (macOS). On first start the **Accounts** screen opens: click **Install** and **Sign in** for the services you use.
 
 Options:
 

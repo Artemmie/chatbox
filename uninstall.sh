@@ -6,5 +6,5 @@ D="${CHATBOX_DATA:-$HOME/.local/share/chatbox}"
 rm -rf "$D"
 rm -f "$HOME/.local/share/applications/chatbox.desktop" \
       "$HOME/.local/share/icons/hicolor/scalable/apps/chatbox.svg"
-rm -rf "$HOME/Applications/Chatbox.app"   # macOS
+rm -rf "$HOME/Applications/Chatbox.app" /Applications/Chatbox.app 2>/dev/null || true   # macOS
 echo "Chatbox removed."
