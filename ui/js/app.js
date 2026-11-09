@@ -206,6 +206,47 @@ const SUGGEST=[['Plan a feature','plan','Plan how to add '],['Explain some code'
 $('#suggest').innerHTML=SUGGEST.map((s,i)=>'<button type="button" data-i="'+i+'">'+s[0]+'</button>').join('');
 $('#suggest').onclick=e=>{const b=e.target.closest('button');if(!b)return;const s=SUGGEST[b.dataset.i];if(s[1])setMode(s[1]);msg.value=s[2];grow();msg.focus();};
 
+async function readEvents(resp, onEvent){
+  if(!resp.ok) throw new Error('The chat request failed ('+resp.status+').');
+  const take=text=>{text.split('\n').forEach(line=>{line=line.trim();if(line)onEvent(JSON.parse(line));});};
+  if(!resp.body||!resp.body.getReader){take(await resp.text());return;}
+  const reader=resp.body.getReader(), dec=new TextDecoder();
+  let buf='';
+  for(;;){
+    const {done,value}=await reader.read();
+    if(done) break;
+    buf+=dec.decode(value,{stream:true});
+    let i;
+    while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i);buf=buf.slice(i+1);if(line.trim())onEvent(JSON.parse(line));}
+  }
+  buf+=dec.decode();
+  if(buf.trim()) onEvent(JSON.parse(buf));
+}
+function modelLabel(b, model, usage){
+  if(b==='ollama') return (usage&&usage.model)||model||'';
+  if(!model) return '';
+  const list=modelCache[b];
+  return (Array.isArray(list)&&list.find(m=>m[0]===model)||[model,model])[1];
+}
+function finishTurn(b, mode, model, r, partial){
+  if(r.session_id)CHAT.sessions[b]=r.session_id;
+  if(r.context_version!==undefined)CHAT.ctx[b]=r.context_version;
+  const label=modelLabel(b, model, r.usage);
+  const u=r.usage?{tok:(r.usage.input||0)+(r.usage.output||0),s:r.usage.seconds,cost:r.usage.cost}:null;
+  if(r.type==='done'||(r.reply!==undefined&&!r.error)){
+    addItem({r:'bot',t:r.reply||'(empty reply)',b,mode,model:label,u});
+  }else{
+    if(partial&&partial.trim()) addItem({r:'bot',t:partial,b,mode,model:label});
+    addItem({r:'err',t:(r.error||'No reply.'),b,mode});
+  }
+  if(r.plan_file)addItem({r:'plan',path:r.plan_file,b});
+  if(r.plan_error)addItem({r:'note',t:r.plan_error});
+  if(r.notes_used&&r.notes_used.length){CHAT.sent[b]=(CHAT.sent[b]||[]).concat(r.notes_used.map(n=>n.path));
+    addItem({r:'note',t:'📓 Used from Obsidian: '+r.notes_used.map(n=>n.title).join(', ')});}
+  (r.saved_memories||[]).forEach(m=>addItem({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id}));
+  if(r.saved_memories&&r.saved_memories.length)refreshMemCount();
+}
+
 async function send(text){
   const rm=text.match(/^\/remember\s+([\s\S]+)/i);
   if(rm){const r=await post('/api/memory',{action:'add',text:rm[1]});
@@ -215,28 +256,31 @@ async function send(text){
   CHAT.workdir=S.workdir||S.home; // each chat keeps its own folder (sessions belong to it)
   addItem({r:'you',t:text,b});
   const pend=document.createElement('div');pend.className='m-bot';
-  pend.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]+'</div><div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="tm">'+(mode==='plan'?'Planning':mode==='agent'?'Working':'Thinking')+'…</span></div></div>';
+  const phase=mode==='plan'?'Planning':mode==='agent'?'Working':'Thinking';
+  pend.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]+'</div><div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="tm">'+phase+'…</span></div></div>';
   thread.appendChild(pend);scrollDown();
   S.busy=true;paint();const t0=Date.now();
-  const tick=setInterval(()=>{const s=Math.round((Date.now()-t0)/1000);pend.querySelector('.tm').textContent=(mode==='plan'?'Planning':mode==='agent'?'Working':'Thinking')+'… '+s+'s';},1000);
-  let r;
-  try{r=await post('/api/chat',{backend:b,message:text,session_id:CHAT.sessions[b],mode,context_version:CHAT.ctx[b],
-      sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home});}
-  catch(err){r={error:String(err)};}
+  const tick=setInterval(()=>{const s=Math.round((Date.now()-t0)/1000);const tm=pend.querySelector('.tm');if(tm)tm.textContent=phase+'… '+s+'s';},1000);
+  let live='', r={}, raf=0;
+  const paintLive=()=>{let box=pend.querySelector('.md');
+    if(!box){const th=pend.querySelector('.thinking');if(th)th.outerHTML='<div class="md"></div>';box=pend.querySelector('.md');}
+    if(box)box.innerHTML=md(live);scrollDown();};
+  try{
+    const resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({backend:b,message:text,session_id:CHAT.sessions[b],mode,context_version:CHAT.ctx[b],
+        sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home})});
+    await readEvents(resp, ev=>{
+      if(ev.type==='delta'){live+=(ev.text||'');if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
+      else if(ev.type==='replace'){live=ev.text||'';if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
+      else if(ev.type==='status'){let s=pend.querySelector('.statusline');
+        if(!s){s=document.createElement('div');s.className='statusline';pend.querySelector('.body').appendChild(s);}
+        s.textContent=ev.text||'';}
+      else if(ev.type==='done'||ev.type==='error') r=ev;
+    });
+  }catch(err){r={type:'error',error:String(err)};}
+  if(raf) cancelAnimationFrame(raf);
   clearInterval(tick);pend.remove();S.busy=false;
-  if(r.session_id)CHAT.sessions[b]=r.session_id;
-  if(r.context_version!==undefined)CHAT.ctx[b]=r.context_version;
-  const label=b==='ollama'?(r.usage&&r.usage.model||model) // just the name (and what "Auto" picked)
-    :model?((Array.isArray(modelCache[b])&&modelCache[b].find(m=>m[0]===model)||[model,model])[1]):'';
-  const u=r.usage?{tok:(r.usage.input||0)+(r.usage.output||0),s:r.usage.seconds,cost:r.usage.cost}:null;
-  if(r.error)addItem({r:'err',t:r.error,b,mode});
-  else addItem({r:'bot',t:r.reply||'(empty reply)',b,mode,model:label,u});
-  if(r.plan_file)addItem({r:'plan',path:r.plan_file,b});
-  if(r.plan_error)addItem({r:'note',t:r.plan_error});
-  if(r.notes_used&&r.notes_used.length){CHAT.sent[b]=(CHAT.sent[b]||[]).concat(r.notes_used.map(n=>n.path));
-    addItem({r:'note',t:'📓 Used from Obsidian: '+r.notes_used.map(n=>n.title).join(', ')});}
-  (r.saved_memories||[]).forEach(m=>addItem({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id}));
-  if(r.saved_memories&&r.saved_memories.length)refreshMemCount();
+  finishTurn(b, mode, model, r.type?r:{type:'error',error:r.error||'No reply.'}, live);
   saveChat();paint();msg.focus();}
 
 // ===== settings & memory =====

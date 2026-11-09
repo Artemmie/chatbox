@@ -10,6 +10,7 @@ import os
 import re
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -90,6 +91,54 @@ def status(url):
     return info
 
 
+class Stopped(Exception):
+    """The user cancelled this Ollama request."""
+
+
+class ThinkFilter:
+    """Drop <think>…</think> blocks, including when the tags arrive split across chunks."""
+
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self):
+        self.buf = ""
+        self.skipping = False
+
+    def feed(self, chunk):
+        self.buf += chunk or ""
+        out = []
+        while self.buf:
+            if self.skipping:
+                i = self.buf.find(self.CLOSE)
+                if i < 0:
+                    self.buf = self.buf[-len(self.CLOSE):]
+                    break
+                self.buf = self.buf[i + len(self.CLOSE):]
+                self.skipping = False
+                continue
+            i = self.buf.find(self.OPEN)
+            if i < 0:
+                keep = 0
+                for k in range(1, len(self.OPEN)):
+                    if self.buf.endswith(self.OPEN[:k]):
+                        keep = k
+                        break
+                out.append(self.buf[:-keep] if keep else self.buf)
+                self.buf = self.buf[-keep:] if keep else ""
+                break
+            out.append(self.buf[:i])
+            self.buf = self.buf[i + len(self.OPEN):]
+            self.skipping = True
+        return "".join(out)
+
+    def flush(self):
+        if self.skipping:
+            self.buf = ""
+            return ""
+        text, self.buf = self.buf, ""
+        return text
+
+
 class Sessions:
     """Conversation history per Ollama session, one JSON file each."""
 
@@ -118,8 +167,13 @@ class Sessions:
             os.replace(path + ".tmp", path)
 
 
-def run_turn(url, sessions, message, session_id, model, timeout):
-    """One chat turn. Returns {"reply", "session_id", "usage"} or {"error", ...}."""
+def _check_stop(turn):
+    if turn is not None and turn.cancel.is_set():
+        raise Stopped()
+
+
+def stream_turn(url, sessions, message, session_id, model, turn, timeout):
+    """Yield ('delta', text) chunks. Return {"reply", "session_id", "usage"} or {"error"}."""
     if not model:  # "Auto": the most recently pulled / changed model
         models = list_models(url)
         if not models:
@@ -132,18 +186,93 @@ def run_turn(url, sessions, message, session_id, model, timeout):
         model = models[0][0]
     history = sessions.load(session_id)
     history.append({"role": "user", "content": message})
+    body = {"model": model, "stream": True,
+            "messages": [{"role": "system", "content": SYSTEM}] + history}
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(clean_url(url) + "/api/chat", data=data,
+                                 headers={"Content-Type": "application/json"})
+    filt = ThinkFilter()
+    parts = []
+    usage = {"model": model}
+    started = time.monotonic()
     try:
-        data = _request(url, "/api/chat", timeout=timeout, body={
-            "model": model, "stream": False,
-            "messages": [{"role": "system", "content": SYSTEM}] + history})
-    except (ConnectionError, RuntimeError, TimeoutError) as e:
-        # No session_id: a failed first turn must not count as a started conversation.
-        return {"error": str(e) or f"No reply after {timeout} seconds."}
-    reply = THINK.sub("", (data.get("message") or {}).get("content", "")).strip()
+        resp = _opener.open(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error") or str(e)
+        except ValueError:
+            msg = str(e)
+        return {"error": f"Ollama: {msg}"}
+    except socket.timeout:
+        return {"error": f"No reply after {timeout} seconds."}
+    except (urllib.error.URLError, OSError) as e:
+        if isinstance(getattr(e, "reason", None), socket.timeout):
+            return {"error": f"No reply after {timeout} seconds."}
+        return {"error": f"Can't reach Ollama at {clean_url(url)} ({getattr(e, 'reason', e)}). "
+                         "Is it running? Start the Ollama app, or run `ollama serve`."}
+    if turn is not None:
+        turn.resp = resp
+    try:
+        _check_stop(turn)
+        while True:
+            _check_stop(turn)
+            if time.monotonic() - started > timeout:
+                raise TimeoutError(f"No reply after {timeout} seconds.")
+            line = resp.readline()
+            if not line:
+                break
+            try:
+                ev = json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if ev.get("error"):
+                return {"error": f"Ollama: {ev['error']}"}
+            piece = filt.feed(((ev.get("message") or {}).get("content")) or "")
+            if piece:
+                parts.append(piece)
+                yield ("delta", piece)
+            if ev.get("done"):
+                tail = filt.flush()
+                if tail:
+                    parts.append(tail)
+                    yield ("delta", tail)
+                usage = {"input": ev.get("prompt_eval_count", 0), "output": ev.get("eval_count", 0),
+                         "model": ev.get("model") or model}
+                break
+    except Stopped:
+        raise
+    except socket.timeout:
+        raise TimeoutError from None
+    except (urllib.error.URLError, OSError) as e:
+        if turn is not None and turn.cancel.is_set():
+            raise Stopped() from None
+        if isinstance(getattr(e, "reason", None), socket.timeout):
+            raise TimeoutError from None
+        raise ConnectionError(f"Can't reach Ollama at {clean_url(url)} ({getattr(e, 'reason', e)}). "
+                              "Is it running? Start the Ollama app, or run `ollama serve`.") from None
+    finally:
+        if turn is not None:
+            turn.resp = None
+        try:
+            resp.close()
+        except OSError:
+            pass
+    reply = "".join(parts).strip()
     history.append({"role": "assistant", "content": reply})
     if len(history) == 2:  # first turn (or the old history was lost): new session
         session_id = uuid.uuid4().hex
     sessions.save(session_id, history)
-    usage = {"input": data.get("prompt_eval_count", 0), "output": data.get("eval_count", 0),
-             "model": data.get("model") or model}
     return {"reply": reply, "session_id": session_id, "usage": usage}
+
+
+def run_turn(url, sessions, message, session_id, model, timeout):
+    """One chat turn. Returns {"reply", "session_id", "usage"} or {"error", ...}."""
+    gen = stream_turn(url, sessions, message, session_id, model, None, timeout)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value or {"error": "No reply."}
+    except (ConnectionError, RuntimeError, TimeoutError, Stopped) as e:
+        # No session_id: a failed first turn must not count as a started conversation.
+        return {"error": str(e) or f"No reply after {timeout} seconds."}
