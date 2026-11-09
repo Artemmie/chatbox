@@ -143,15 +143,48 @@ def json_usage(data):
     return streaming.json_usage(data)
 
 
-def _timeout_message(exc):
+BACKEND_NAMES = {"cursor": "Cursor", "claude": "Claude", "codex": "Codex",
+                 "chatgpt": "ChatGPT", "ollama": "Ollama"}
+_EXE = {"cursor": "cursor-agent", "claude": "claude", "codex": "codex", "chatgpt": "codex"}
+
+
+def _span(seconds):
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds} second{'s' if seconds != 1 else ''}"
+    minutes = max(1, seconds // 60)
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+
+def _timeout_message(exc, backend=None):
+    who = BACKEND_NAMES.get(backend, "The assistant")
     if exc.kind == "start":
-        return (f"No output for {exc.seconds} seconds, so Chatbox stopped the assistant. "
-                "It may be stuck, or still starting up. Try again.")
+        return (f"{who} produced no output for {_span(exc.seconds)}, so the request was stopped. "
+                "It may be stuck, or still starting up. Try again — or press Stop if it hangs.")
     if exc.kind == "idle":
-        return (f"No output for {exc.seconds // 60} minutes, so Chatbox stopped the assistant. "
-                "It looked stuck.")
-    minutes = max(1, exc.seconds // 60)
-    return f"No finished reply after {minutes} minutes, so Chatbox stopped the assistant."
+        return (f"{who} went quiet for {_span(exc.seconds)}, so the request was stopped. It looked stuck.")
+    return (f"{who} did not finish within {_span(exc.seconds)}, so the request was stopped.")
+
+
+def preflight(backend):
+    """A clear error when the tool is missing or the cached sign-in says it is not connected.
+
+    A stale cache is ignored so a sign-in that just finished is not blocked.
+    """
+    if backend == "ollama" or backend not in _EXE:
+        return None
+    name, exe = BACKEND_NAMES[backend], _EXE[backend]
+    if not find(exe):
+        return (f"{name} is not installed ({exe} was not found). "
+                "Open Accounts (bottom left) to install it, then try again.")
+    sid = "codex" if backend in ("codex", "chatgpt") else backend
+    with ACCOUNTS.lock:
+        fresh = time.time() - ACCOUNTS._cache_time < 20
+        info = (ACCOUNTS._cache or {}).get(sid) if fresh else None
+    if info and info.get("installed") and not info.get("logged_in") and not info.get("error"):
+        return (f"{name} is not signed in. "
+                "Open Accounts (bottom left) to sign in, then try again.")
+    return None
 
 
 def stream_cli(backend, message, session_id, mode, model, workdir, turn):
@@ -175,9 +208,16 @@ def stream_cli(backend, message, session_id, mode, model, workdir, turn):
             raise
         except streaming.TurnTimeout:
             raise
+        if turn.cancel.is_set():
+            raise streaming.Cancelled()
         result = parser.finish()
         err = (turn.stderr or "").strip()
         last_err, last_code = err, turn.returncode
+        # A crash (or a kill) after some text is not a finished answer. A clean
+        # exit with no terminal event still counts: the text we saw is the reply.
+        if turn.returncode not in (0, None) and not getattr(parser, "saw_terminal", False):
+            result = {"error": err or f"Exited with code {turn.returncode}",
+                      "session_id": getattr(parser, "session_id", None)}
         if result and result.get("reply") is not None:
             return result
         if result and result.get("error") and not streaming.unknown_flag(err):
@@ -209,7 +249,7 @@ def run_turn(backend, message, session_id, mode, model, workdir):
     except streaming.Cancelled:
         return {"error": "Stopped."}
     except streaming.TurnTimeout as e:
-        return {"error": _timeout_message(e)}
+        return {"error": _timeout_message(e, backend)}
     except ollama.Stopped:
         return {"error": "Stopped."}
     except TimeoutError:
@@ -242,10 +282,28 @@ def iter_backend(backend, message, session_id, mode, model, workdir, turn):
     return result or {"error": "No reply."}
 
 
+def _detail_line(err):
+    line = next((ln.strip() for ln in str(err).splitlines() if ln.strip()), str(err))
+    return line[:300]
+
+
 def login_hint(backend, err):
-    low = err.lower()
-    if "login" in low or "logged in" in low or "not installed" in low or "auth" in low:
-        err += "\n\nOpen Accounts (bottom left) to install or sign in, then try again."
+    """Turn a raw CLI failure into a short explanation, keeping one line of detail."""
+    name = BACKEND_NAMES.get(backend, "The assistant")
+    low = str(err).lower()
+    if "open accounts" in low and ("not signed in" in low or "not installed" in low):
+        return err
+    signed_out = any(s in low for s in (
+        "not logged in", "not signed in", "please log in", "please login", "please sign in",
+        "authentication required", "unauthorized", "auth login", "run /login", "claude auth login"))
+    if signed_out:
+        return (f"{name} is not signed in. Open Accounts (bottom left) to sign in, then try again."
+                f"\n\nDetails: {_detail_line(err)}")
+    if "not installed" in low or "no such file" in low or "command not found" in low:
+        return (f"{name} is not installed. Open Accounts (bottom left) to install it, then try again."
+                f"\n\nDetails: {_detail_line(err)}")
+    if "login" in low or "logged in" in low or "auth" in low:
+        return err + "\n\nOpen Accounts (bottom left) to install or sign in, then try again."
     return err
 
 
@@ -408,10 +466,15 @@ def chat_stream(req):
         yield {"type": "started", "turn_id": turn.id}
         try:
             if turn.cancel.is_set():
-                yield {"type": "error", "error": "Stopped.", "context_version": req.get("context_version")}
+                yield {"type": "error", "error": "Stopped.", "stopped": True,
+                       "context_version": req.get("context_version")}
                 return
             message, notes = _prepare_message(req)
             backend, model = req.get("backend"), (req.get("model") or "").strip()
+            problem = preflight(backend)
+            if problem:
+                yield {"type": "error", "error": problem, "context_version": req.get("context_version")}
+                return
             started = time.time()
             gen = iter_backend(backend, message, req.get("session_id"), req.get("mode", "ask"),
                                model, req.get("workdir"), turn)
@@ -423,13 +486,16 @@ def chat_stream(req):
                 result = stop.value or {"error": "No reply."}
             result = _finish_result(req, result, notes, started)
         except streaming.Cancelled:
-            yield {"type": "error", "error": "Stopped.", "context_version": req.get("context_version")}
+            yield {"type": "error", "error": "Stopped.", "stopped": True,
+                   "context_version": req.get("context_version")}
             return
         except streaming.TurnTimeout as e:
-            yield {"type": "error", "error": _timeout_message(e), "context_version": req.get("context_version")}
+            yield {"type": "error", "error": _timeout_message(e, req.get("backend")),
+                   "context_version": req.get("context_version")}
             return
         except ollama.Stopped:
-            yield {"type": "error", "error": "Stopped.", "context_version": req.get("context_version")}
+            yield {"type": "error", "error": "Stopped.", "stopped": True,
+                   "context_version": req.get("context_version")}
             return
         except Exception as e:
             yield {"type": "error", "error": str(e), "context_version": req.get("context_version")}
@@ -681,6 +747,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, '{"error":"Only plan files saved by Chatbox can be opened."}')
             accounts.open_path(path)
             return self._send(200, '{"ok":true}')
+        if self.path == "/api/cancel":
+            return self._send(200, json.dumps({"ok": streaming.cancel(str(req.get("turn_id") or ""))}))
         if self.path == "/api/open":
             try:
                 accounts.open_url(req.get("url", ""))

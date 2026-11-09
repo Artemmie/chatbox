@@ -138,6 +138,7 @@ main.is-empty .composer-wrap{padding-bottom:14vh}
 .send{width:34px;height:34px;border-radius:10px;border:0;background:var(--accent);color:#fff;display:grid;place-items:center;cursor:pointer}
 .send svg{width:18px;height:18px}
 .send:disabled{opacity:.35;cursor:not-allowed}
+.send.stop{background:var(--text);color:var(--bg)}
 
 /* dropdown pickers */
 .pick{position:relative}

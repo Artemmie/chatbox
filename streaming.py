@@ -173,10 +173,14 @@ def read_stdout(cmd, cwd, turn, total=None, start_timeout=None, idle_timeout=Non
             if isinstance(item, Exception):
                 raise item
             if item is None:
+                if turn.cancel.is_set():
+                    raise Cancelled()
                 break
             saw_output = True
             last = time.monotonic()
             yield item.decode("utf-8", "replace")
+        if turn.cancel.is_set():
+            raise Cancelled()
     finally:
         if proc.poll() is None:
             _kill_proc(proc)
@@ -261,6 +265,7 @@ class CodexParser:
         self.error = None
         self.usage = {}
         self.visible = ""
+        self.saw_terminal = False
 
     def feed_line(self, line):
         ev = _loads(line)
@@ -292,10 +297,12 @@ class CodexParser:
                 if cmd:
                     out.append(("status", "Running " + cmd[:160]))
         elif t == "turn.completed":
+            self.saw_terminal = True
             u = ev.get("usage") or {}
             self.usage = {"input": u.get("input_tokens", 0), "cache_read": u.get("cached_input_tokens", 0),
                           "output": u.get("output_tokens", 0), "reasoning": u.get("reasoning_output_tokens", 0)}
         elif t in ("error", "turn.failed"):
+            self.saw_terminal = True
             self.error = _codex_error(ev)
         return out
 
@@ -333,6 +340,7 @@ class ClaudeParser:
         self.error = None
         self.is_error = False
         self.usage = {}
+        self.saw_terminal = False
 
     def feed_line(self, line):
         ev = _loads(line)
@@ -357,6 +365,7 @@ class ClaudeParser:
             if extra:
                 out.append(("delta", extra))
         elif t == "result" or (t is None and "result" in ev):
+            self.saw_terminal = True
             self.result = ev.get("result") or ""
             self.is_error = bool(ev.get("is_error"))
             self.usage = json_usage(ev)
@@ -365,6 +374,7 @@ class ClaudeParser:
             elif not self.saw_delta:
                 out.extend(self._adopt_final(self.result))
         elif t == "error":
+            self.saw_terminal = True
             err = ev.get("error")
             if isinstance(err, dict):
                 self.error = err.get("message") or "Error"
@@ -414,6 +424,7 @@ class CursorParser:
         self.error = None
         self.is_error = False
         self.usage = {}
+        self.saw_terminal = False
 
     def feed_line(self, line):
         ev = _loads(line)
@@ -440,6 +451,7 @@ class CursorParser:
             if label:
                 out.append(("status", label))
         elif t == "result" or (t is None and "result" in ev and "message" not in ev):
+            self.saw_terminal = True
             self.result = ev.get("result") or ""
             self.is_error = bool(ev.get("is_error"))
             self.usage = json_usage(ev)

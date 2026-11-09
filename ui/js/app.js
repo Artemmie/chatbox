@@ -17,7 +17,12 @@ const ICON={copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
   chev:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>',
   check:'<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12l5 5 9-10"/></svg>',
   plan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>',
-  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>'};
+  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+  up:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+  stop:'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>'};
+const inflight=new Map();
+function newTurnId(){return [...crypto.getRandomValues(new Uint8Array(16))].map(x=>x.toString(16).padStart(2,'0')).join('');}
+function stopTurns(){for(const [id,ac] of inflight){post('/api/cancel',{turn_id:id});ac.abort();}}
 
 const S={backend:store.get('backend')||'claude',mode:store.get('mode')||'ask',busy:false,none:false,
   workdir:store.get('workdir')||'',home:''};
@@ -126,7 +131,7 @@ function renderChatList(list){
   $('#chatlist').innerHTML=h||'<div class="side-empty">Your chats will show up here.</div>';}
 $('#chatlist').addEventListener('click',async e=>{const it=e.target.closest('.chatitem');if(!it)return;const id=it.dataset.id;
   if(e.target.closest('.del')){if(!confirm('Delete this chat?'))return;renderChatList(await post('/api/chats',{action:'delete',id}));if(CHAT.id===id)startNew();return;}
-  if(S.busy){note('Wait for the current reply to finish.');return;}
+  if(S.busy){note('Stop the current reply before opening another chat.');return;}
   const c=await fetch('/api/chats/'+id).then(r=>r.json());if(c.error)return;
   CHAT={...newChatState(),...c,sessions:{...fresh(),...c.sessions},ctx:{...fresh(),...c.ctx},sent:{...fresh(),...c.sent}};
   thread.innerHTML='';CHAT.items.forEach(render);setEmpty();
@@ -162,7 +167,10 @@ function paint(){
   $('#folderbtn').title='Working folder: '+(S.workdir||S.home);
   paintModels();
   const any=BACKENDS.some(ready);S.none=!any&&ACCLOADED;
-  $('#msg').disabled=S.none;$('#send').disabled=S.none||S.busy;
+  $('#msg').disabled=S.none;$('#send').disabled=S.none;
+  $('#send').classList.toggle('stop',!!S.busy);
+  $('#send').title=S.busy?'Stop':'Send (Enter)';
+  $('#send').innerHTML=S.busy?ICON.stop:ICON.up;
   $('#msg').placeholder=S.none?'No assistant is connected yet — open Accounts to sign in.':S.mode==='plan'?'Describe what to build — you’ll get a plan to review first…':S.mode==='agent'?'What should '+NAMES[b]+' build or change?':'How can I help you today?';
   $('#hellosub').textContent=S.none?'Connect an assistant in Accounts to get started.':'Chatting with '+NAMES[b]+' · '+MODES[S.mode][0]+' mode';
   $('#accbtn').classList.toggle('warn',S.none);}
@@ -201,7 +209,8 @@ const msg=$('#msg');
 function grow(){msg.style.height='auto';msg.style.height=Math.min(msg.scrollHeight,240)+'px';}
 msg.addEventListener('input',grow);
 msg.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('#f').requestSubmit();}});
-$('#f').onsubmit=e=>{e.preventDefault();const t=msg.value.trim();if(!t||S.busy||S.none)return;msg.value='';grow();send(t);};
+$('#f').onsubmit=e=>{e.preventDefault();if(S.busy||S.none)return;const t=msg.value.trim();if(!t)return;msg.value='';grow();send(t);};
+$('#send').addEventListener('click',e=>{if(!S.busy)return;e.preventDefault();stopTurns();});
 const SUGGEST=[['Plan a feature','plan','Plan how to add '],['Explain some code','ask','Explain what this code does: '],['Review my project','ask','Look at this folder and tell me what could be improved.'],['Remember something','','/remember ']];
 $('#suggest').innerHTML=SUGGEST.map((s,i)=>'<button type="button" data-i="'+i+'">'+s[0]+'</button>').join('');
 $('#suggest').onclick=e=>{const b=e.target.closest('button');if(!b)return;const s=SUGGEST[b.dataset.i];if(s[1])setMode(s[1]);msg.value=s[2];grow();msg.focus();};
@@ -233,7 +242,10 @@ function finishTurn(b, mode, model, r, partial){
   if(r.context_version!==undefined)CHAT.ctx[b]=r.context_version;
   const label=modelLabel(b, model, r.usage);
   const u=r.usage?{tok:(r.usage.input||0)+(r.usage.output||0),s:r.usage.seconds,cost:r.usage.cost}:null;
-  if(r.type==='done'||(r.reply!==undefined&&!r.error)){
+  if(r.stopped){
+    if(partial&&partial.trim()) addItem({r:'bot',t:partial,b,mode,model:label});
+    addItem({r:'note',t:'You stopped this reply.'});
+  }else if(r.type==='done'||(r.reply!==undefined&&!r.error)){
     addItem({r:'bot',t:r.reply||'(empty reply)',b,mode,model:label,u});
   }else{
     if(partial&&partial.trim()) addItem({r:'bot',t:partial,b,mode,model:label});
@@ -262,13 +274,15 @@ async function send(text){
   S.busy=true;paint();const t0=Date.now();
   const tick=setInterval(()=>{const s=Math.round((Date.now()-t0)/1000);const tm=pend.querySelector('.tm');if(tm)tm.textContent=phase+'… '+s+'s';},1000);
   let live='', r={}, raf=0;
+  const turnId=newTurnId(), ac=new AbortController();
+  inflight.set(turnId, ac);
   const paintLive=()=>{let box=pend.querySelector('.md');
     if(!box){const th=pend.querySelector('.thinking');if(th)th.outerHTML='<div class="md"></div>';box=pend.querySelector('.md');}
     if(box)box.innerHTML=md(live);scrollDown();};
   try{
-    const resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+    const resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},signal:ac.signal,
       body:JSON.stringify({backend:b,message:text,session_id:CHAT.sessions[b],mode,context_version:CHAT.ctx[b],
-        sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home})});
+        sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home,turn_id:turnId})});
     await readEvents(resp, ev=>{
       if(ev.type==='delta'){live+=(ev.text||'');if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
       else if(ev.type==='replace'){live=ev.text||'';if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
@@ -277,7 +291,10 @@ async function send(text){
         s.textContent=ev.text||'';}
       else if(ev.type==='done'||ev.type==='error') r=ev;
     });
-  }catch(err){r={type:'error',error:String(err)};}
+  }catch(err){
+    if(err.name==='AbortError'){if(!r.type)r={type:'error',error:'Stopped.',stopped:true};}
+    else if(!r.type) r={type:'error',error:String(err)};
+  }finally{inflight.delete(turnId);}
   if(raf) cancelAnimationFrame(raf);
   clearInterval(tick);pend.remove();S.busy=false;
   finishTurn(b, mode, model, r.type?r:{type:'error',error:r.error||'No reply.'}, live);
