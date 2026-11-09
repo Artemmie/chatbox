@@ -38,7 +38,7 @@ INSTALL = {
 SERVICES = {
     "cursor": {"name": "Cursor", "plan": "Cursor account (free or paid plan)", "exe": "cursor-agent"},
     "claude": {"name": "Claude", "plan": "Claude Pro or Max subscription", "exe": "claude"},
-    "codex": {"name": "Codex & ChatGPT", "plan": "ChatGPT account (Plus/Pro, or free with limits)",
+    "codex": {"name": "Codex", "plan": "ChatGPT account, used by the Codex coding agent (Plus/Pro, or free with limits)",
               "exe": "codex"},
 }
 

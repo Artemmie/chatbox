@@ -21,6 +21,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts
+import chatgpt
 import memory
 import ollama
 import streaming
@@ -32,6 +33,7 @@ TIMEOUT = streaming.TOTAL_TIMEOUT  # seconds per reply; override with CHATBOX_TI
 
 
 DATA_DIR = os.environ.get("CHATBOX_DATA", os.path.join(HOME, ".local/share/chatbox"))
+chatgpt.init(DATA_DIR, accounts.open_url)
 
 # Apps opened from the macOS Finder (or some Linux menus) get a short PATH, so add the
 # usual places the tools are installed to. The assistants' child processes inherit it.
@@ -62,25 +64,17 @@ def find(cmd):
     return path
 
 
-# "ChatGPT" = Codex told to just chat, run read-only from an empty folder.
-CHATGPT_HOME = os.path.join(DATA_DIR, "chatgpt-home")
-CHATGPT_INSTRUCTIONS = ("You are ChatGPT, a friendly general-purpose assistant in a plain chat window. "
-                        "Do not run commands, read files or use tools; just answer conversationally.")
-
-
-def build_codex_command(message, session_id, mode, model, chat=False):
+def build_codex_command(message, session_id, mode, model):
     exe = find("codex")
     if not exe:
-        raise RuntimeError("Codex (from the ChatGPT app) is not installed.")
-    sandbox = "workspace-write" if mode == "agent" and not chat else "read-only"
+        raise RuntimeError("Codex is not installed.")
+    sandbox = "workspace-write" if mode == "agent" else "read-only"
     cmd = [exe, "exec"] + (["resume"] if session_id else [])
     # The ChatGPT app's older Codex needs an explicit model; a standalone one picks its own.
     model = model or (CODEX_DEFAULT_MODEL if CODEX_APP_PATH and exe == CODEX_APP_PATH else "")
     cmd += ["--json", "--skip-git-repo-check", "-c", f'sandbox_mode="{sandbox}"']
     if model:
         cmd += ["-m", model]
-    if chat:
-        cmd += ["-c", "developer_instructions=" + json.dumps(CHATGPT_INSTRUCTIONS)]
     if session_id:
         cmd.append(session_id)
     cmd.append(message)
@@ -101,8 +95,8 @@ def build_command(backend, message, session_id, mode, model, stream="full"):
     stream is 'full' (token deltas), 'basic' (one JSON event per message) or 'off'
     (a single JSON result). Codex already streams events with --json, so stream is ignored there.
     """
-    if backend in ("codex", "chatgpt"):
-        return build_codex_command(message, session_id, mode, model, chat=backend == "chatgpt")
+    if backend == "codex":
+        return build_codex_command(message, session_id, mode, model)
     if backend == "cursor":
         exe = find("cursor-agent")
         if not exe:
@@ -171,13 +165,20 @@ def preflight(backend):
 
     A stale cache is ignored so a sign-in that just finished is not blocked.
     """
-    if backend == "ollama" or backend not in _EXE:
+    if backend == "ollama":
+        return None
+    if backend == "chatgpt":
+        if not chatgpt.logged_in():
+            return ("ChatGPT is not signed in. Open Accounts (bottom left) and choose "
+                    "Continue with ChatGPT. That uses your ChatGPT plan — no API key.")
+        return None
+    if backend not in _EXE:
         return None
     name, exe = BACKEND_NAMES[backend], _EXE[backend]
     if not find(exe):
         return (f"{name} is not installed ({exe} was not found). "
                 "Open Accounts (bottom left) to install it, then try again.")
-    sid = "codex" if backend in ("codex", "chatgpt") else backend
+    sid = backend
     with ACCOUNTS.lock:
         fresh = time.time() - ACCOUNTS._cache_time < 20
         info = (ACCOUNTS._cache or {}).get(sid) if fresh else None
@@ -189,7 +190,7 @@ def preflight(backend):
 
 def stream_cli(backend, message, session_id, mode, model, workdir, turn):
     """Yield ('delta'|'replace'|'status', text). Return the result dict."""
-    attempts = ["codex"] if backend in ("codex", "chatgpt") else ["full", "basic", "off"]
+    attempts = ["codex"] if backend == "codex" else ["full", "basic", "off"]
     emitted = False
     last_err, last_code = "", 1
     parser = None
@@ -269,10 +270,15 @@ def iter_backend(backend, message, session_id, mode, model, workdir, turn):
         except (ConnectionError, RuntimeError, OSError) as e:
             return {"error": str(e) or "No reply."}
         return result or {"error": "No reply."}
+    if backend == "chatgpt":
+        try:
+            result = yield from chatgpt.stream_turn(message, session_id, model, turn, streaming.TOTAL_TIMEOUT)
+        except TimeoutError as e:
+            return {"error": str(e) or f"No reply after {streaming.TOTAL_TIMEOUT} seconds."}
+        except (ConnectionError, RuntimeError, OSError) as e:
+            return {"error": str(e) or "ChatGPT did not answer."}
+        return result or {"error": "No reply."}
     workdir = os.path.expanduser(workdir or HOME)
-    if backend == "chatgpt":  # plain chat: no project folder
-        os.makedirs(CHATGPT_HOME, exist_ok=True)
-        workdir = CHATGPT_HOME
     if not os.path.isdir(workdir):
         return {"error": f"Folder not found: {workdir}"}
     try:
@@ -341,7 +347,9 @@ def list_models(backend):
     """[[id, label], ...] for the dropdown. 'Auto' (no --model flag) is added by the page."""
     if backend == "claude":
         return CLAUDE_MODELS
-    if backend in ("codex", "chatgpt"):
+    if backend == "chatgpt":
+        return chatgpt.list_models()
+    if backend == "codex":
         return CODEX_MODELS if codex_is_bundled() else codex_cached_models()
     if backend == "ollama":  # asked fresh each time: it's fast, and you may have just pulled one
         return ollama.list_models(ollama_url())
@@ -437,7 +445,7 @@ def _finish_result(req, result, notes, started):
     """Usage, saved memories and the plan file. Mutates result."""
     backend, model = req.get("backend"), (req.get("model") or "").strip()
     if backend in usagemod.BACKENDS and not str(result.get("error", "")).startswith("Folder not found"):
-        if not model and backend in ("codex", "chatgpt") and codex_is_bundled():
+        if not model and backend == "codex" and codex_is_bundled():
             model = CODEX_DEFAULT_MODEL
         result["usage"] = USAGE.record(backend, req.get("mode", "ask"), model,
                                        "reply" in result, time.time() - started, result.get("usage"))
@@ -673,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200 if chat else 404, json.dumps(chat or {"error": "not found"}))
         if self.path.startswith("/api/accounts"):
             return self._send(200, json.dumps(ACCOUNTS.status(fresh="fresh=1" in self.path)
-                                              + [ollama.status(ollama_url())]))
+                                              + [chatgpt.status(), ollama.status(ollama_url())]))
         self._send(404, '{"error":"not found"}')
 
     def do_POST(self):
@@ -686,7 +694,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, '{"error":"bad request"}')
         if self.path == "/api/account":
             try:
-                ACCOUNTS.action(req.get("service"), req.get("action"), req.get("text", ""))
+                if req.get("service") == "chatgpt":
+                    chatgpt.action(req.get("action"))
+                else:
+                    ACCOUNTS.action(req.get("service"), req.get("action"), req.get("text", ""))
                 if req.get("action") in ("dismiss", "cancel"):
                     _model_cache.clear()  # a new install/login may change the lists
                 return self._send(200, json.dumps({"ok": True}))

@@ -2,7 +2,7 @@
 const $=s=>document.querySelector(s), thread=$('#thread');
 const NAMES={cursor:'Cursor',claude:'Claude',codex:'Codex',chatgpt:'ChatGPT',ollama:'Ollama'},BACKENDS=Object.keys(NAMES);
 const INITIAL={cursor:'C',claude:'A',codex:'X',chatgpt:'G',ollama:'O'};
-const SVC={cursor:'cursor',claude:'claude',codex:'codex',chatgpt:'codex',ollama:'ollama'};
+const SVC={cursor:'cursor',claude:'claude',codex:'codex',chatgpt:'chatgpt',ollama:'ollama'};
 const NOFOLDER=b=>b==='chatgpt'||b==='ollama'; // plain chat: no files, no Agent mode
 const MODES={ask:['Ask','Answers questions. Can read files, changes nothing.'],
   plan:['Plan','Writes a step-by-step plan as a .md file first.'],
@@ -189,7 +189,7 @@ function paint(){
     '<div class="mh">Assistant'+(picked.length>1?' · select more than one':'')+'</div>'+BACKENDS.map(x=>{const ok=ready(x);const a=ACC[SVC[x]];
       const on=picked.includes(x);
       const sub=!ok?(x==='ollama'?(a&&a.installed?'No models yet':'Not running')+' — see Accounts':(a&&!a.installed?'Not installed':'Not connected')+' — set up in Accounts')
-        :on&&picked.length>1?'Asked together':x==='ollama'?'Local models, plain chat':x==='chatgpt'?'Plain chat, no files':x==='codex'?'Coding agent by OpenAI':x==='claude'?'Claude Code by Anthropic':'Cursor agent';
+        :on&&picked.length>1?'Asked together':x==='ollama'?'Local models, plain chat':x==='chatgpt'?'Your ChatGPT plan · plain chat':x==='codex'?'Coding agent by OpenAI':x==='claude'?'Claude Code by Anthropic':'Cursor agent';
       return '<button type="button" class="mi'+(on?' sel':'')+'" data-b="'+x+'"'+(ok?'':' disabled')+'><span class="bdot" style="background:'+color(x)+'"></span><span class="mt"><b>'+NAMES[x]+'</b><span>'+sub+'</span></span>'+ICON.check+'</button>';}).join('')
       +'<button type="button" class="mi" data-openacc><span class="mt"><span>Manage accounts…</span></span></button>');
   const chat=picked.every(NOFOLDER);if(chat&&S.mode==='agent')S.mode='ask';
@@ -455,7 +455,10 @@ function markBackends(){
   paint();}
 async function refreshAccounts(fresh){
   let list;try{list=await fetch('/api/accounts'+(fresh?'?fresh=1':'')).then(r=>r.json());}catch(e){return;}
-  ACC=Object.fromEntries(list.map(a=>[a.id,a]));markBackends();
+  const wasChat=ACC.chatgpt&&ACC.chatgpt.logged_in;
+  ACC=Object.fromEntries(list.map(a=>[a.id,a]));
+  if(ACC.chatgpt&&ACC.chatgpt.logged_in&&!wasChat){delete modelCache.chatgpt;if(S.backend==='chatgpt'||activeChoice().includes('chatgpt'))loadModelsFor('chatgpt');}
+  markBackends();
   const j=JSON.stringify(list);if(j!==accJSON){accJSON=j;renderAccounts(list);}
   clearTimeout(accTimer);
   if($('#acc').open)accTimer=setTimeout(()=>refreshAccounts(),list.some(a=>a.job&&a.job.state==='running')?1500:15000);
@@ -478,8 +481,11 @@ function renderAccounts(list){
     const busy=a.job&&a.job.state==='running';const dis=busy?' disabled':'';
     let btns='';
     if(!a.installed)btns='<button class="btn" data-act="install" data-s="'+a.id+'"'+dis+'>Install</button>';
-    else if(!a.logged_in)btns='<button class="btn" data-act="login" data-s="'+a.id+'"'+dis+'>Sign in</button>'
-      +(a.id==='codex'?' <button class="ghost" data-act="login_browser" data-s="codex"'+dis+' title="Older method: the browser sends you back to Codex on this computer">Sign in with browser redirect</button>':'');
+    else if(!a.logged_in)btns=(a.id==='chatgpt'
+      ?'<button class="btn" data-act="login" data-s="chatgpt" data-oai-siwc-button'+dis+'>Continue with ChatGPT</button>'
+        +(a.has_client?' <button class="ghost" data-act="login_new" data-s="chatgpt"'+dis+'>Use a different account</button>':'')
+      :'<button class="btn" data-act="login" data-s="'+a.id+'"'+dis+'>Sign in</button>'
+      +(a.id==='codex'?' <button class="ghost" data-act="login_browser" data-s="codex"'+dis+' title="Older method: the browser sends you back to Codex on this computer">Sign in with browser redirect</button>':''));
     else btns='<button class="ghost" data-act="logout" data-s="'+a.id+'"'+dis+'>Sign out</button>';
     if(a.installed&&a.id==='codex'&&a.source)btns+=' <button class="ghost" data-act="install" data-s="codex"'+dis+' title="OpenAI’s standalone Codex is newer and supports more models">Install standalone Codex</button>';
     let job='';
@@ -500,7 +506,7 @@ function renderAccounts(list){
       if(J.asks_code)job+='<div class="row"><input class="field" id="code_'+a.id+'" placeholder="Paste the code from the browser" value="'+esc(codes[a.id]||'')+'"><button class="btn" data-act="input" data-s="'+a.id+'">Submit code</button></div>';
       if(J.output)job+='<details'+(J.state==='failed'?' open':'')+'><summary class="muted">Details</summary><pre>'+esc(J.output)+'</pre></details>';
       job+='<div class="row">'+(J.state==='running'?'<button class="ghost" data-act="cancel" data-s="'+a.id+'">Cancel</button>':'<button class="ghost" data-act="dismiss" data-s="'+a.id+'">OK</button>')+'</div></div>';}
-    const dots=a.id==='codex'?'<span class="bdot" style="background:var(--codex)"></span><span class="bdot" style="background:var(--chatgpt)"></span>':'<span class="bdot" style="background:'+color(a.id)+'"></span>';
+    const dots='<span class="bdot" style="background:'+color(a.id==='codex'?'codex':a.id)+'"></span>';
     return '<div class="sec"><div class="sec-h">'+dots+'<b>'+esc(a.name)+'</b><span class="pill '+st[0]+'">'+st[1]+'</span></div>'
       +'<div class="muted">Needs: '+esc(a.plan)+(a.source?' · Codex '+esc(a.source):'')+'</div>'
       +'<div class="row">'+btns+'</div>'+job+'</div>';}).join('');}
@@ -516,7 +522,7 @@ $('#acclist').addEventListener('click',async e=>{
   if(act==='copycode'){copy(t.dataset.code,t);return;}
   if(act==='ollamacheck'){t.disabled=true;ollamaRefresh();return;}
   if(act==='install'&&!confirm('Download and run the official '+name+' installer?'))return;
-  if(act==='logout'&&!confirm('Sign out of '+name+' on this computer?'+(s==='codex'?'\n\nThis also signs out Codex in the ChatGPT app.':'')))return;
+  if(act==='logout'&&!confirm('Sign out of '+name+' on this computer?'+(s==='codex'?'\n\nThis also signs out Codex in the ChatGPT app.':s==='chatgpt'?'\n\nThis disconnects Chatbox from your ChatGPT plan here. You can also remove Chatbox in ChatGPT settings.':'')))return;
   const body={service:s,action:act};
   if(act==='input'){body.text=codes[s]||'';if(!body.text.trim())return;codes[s]='';}
   t.disabled=true;const r=await post('/api/account',body);if(r.error)alert(r.error);
