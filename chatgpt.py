@@ -214,6 +214,22 @@ class AccountStore:
                 data["active"] = account["client_id"]
             self.save(data)
 
+    def remember_client(self, client_id):
+        """Keep an issued client id before tokens exist, so a retry does not register a new one."""
+        if not client_id or client_id == "dynamic_agent_client":
+            return
+        with self.lock:
+            data = self.load()
+            acc = data["accounts"].get(client_id)
+            if not isinstance(acc, dict):
+                acc = {"client_id": client_id, "email": "", "subject": "", "scopes": []}
+            else:
+                acc = dict(acc)
+                acc["client_id"] = client_id
+            data["accounts"][client_id] = acc
+            data["active"] = client_id
+            self.save(data)
+
     def clear_tokens(self):
         """Sign out: forget tokens, keep the client id so the next sign-in can reuse it."""
         with self.lock:
@@ -249,6 +265,65 @@ def _token_error(body):
     if isinstance(body, dict):
         return body.get("error_description") or body.get("error") or "Sign-in failed."
     return "Sign-in failed."
+
+
+def client_kind(client_id):
+    """'dynamic' for the first-time entrypoint, otherwise an issued registration."""
+    if not client_id or client_id == "dynamic_agent_client":
+        return "dynamic"
+    return "issued"
+
+
+def parse_oauth_query(query):
+    """Parse a callback query without turning '+' into a space (authorization codes may contain it)."""
+    out = {}
+    for part in (query or "").split("&"):
+        if not part:
+            continue
+        key, _, value = part.partition("=")
+        key = urllib.parse.unquote(key)
+        value = urllib.parse.unquote(value)
+        if key and key not in out:
+            out[key] = value
+    return out
+
+
+_LOG_KEYS = {"client_kind", "http_status", "error", "error_description", "redirect_host",
+             "redirect_path", "redirect_port", "resource", "pkce", "reason", "has_code",
+             "ignored", "detail"}
+
+
+def _safe_detail(value):
+    text = str("" if value is None else value).replace("\n", " ")
+    text = re.sub(r"(?i)\b(code|token|verifier|secret|id_token|refresh_token|access_token)=[^&\s]+",
+                  r"\1=redacted", text)
+    return text[:300]
+
+
+def signin_log(log_path, step, **fields):
+    """One line in chatbox.log. Never pass codes, tokens, or PKCE verifiers."""
+    parts = [f"step={_safe_detail(step)}"]
+    for key in sorted(fields):
+        if key not in _LOG_KEYS:
+            continue
+        value = _safe_detail(fields[key]) if key in ("error", "error_description", "detail") else str(fields[key])
+        value = value.replace("\n", " ")[:120]
+        parts.append(f"{key}={value}")
+    line = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + " chatgpt-signin " + " ".join(parts)
+    try:
+        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass
+    return line
+
+
+def oauth_error_fields(exc):
+    body = exc.body if isinstance(getattr(exc, "body", None), dict) else {}
+    err = body.get("error") if isinstance(body.get("error"), str) else ""
+    desc = body.get("error_description") if isinstance(body.get("error_description"), str) else ""
+    return {"http_status": getattr(exc, "status", 0), "error": err, "error_description": desc}
 
 
 def friendly_api_error(code, message):
@@ -402,24 +477,63 @@ class Service:
         self.jwks, self.jwks_at = data, time.time()
         return data
 
+    def _log_path(self):
+        return os.path.join(os.path.dirname(self.store.dir), "chatbox.log")
+
+    def _signin_log(self, step, **fields):
+        return signin_log(self._log_path(), step, **fields)
+
     def _login(self, job, fresh):
         try:
-            self._login_inner(job, fresh)
+            self._login_flow(job, fresh)
         except Exception as e:
+            self._signin_log("login", detail=type(e).__name__)
             if job.state == "running":
                 job.fail(str(e) or "Sign-in failed.")
 
-    def _login_inner(self, job, fresh):
+    def _login_flow(self, job, fresh):
+        """One sign-in. On invalid_grant, keep the issued client and authorize once more with it."""
         existing = None if fresh else self.store.active()
         client_id = (existing or {}).get("client_id") or "dynamic_agent_client"
+        outcome = self._authorize_once(job, client_id, existing)
+        if outcome.get("cancelled") or job.state == "cancelled":
+            return
+        issued = outcome.get("issued")
+        if outcome.get("invalid_grant") and issued and issued != "dynamic_agent_client":
+            self._signin_log("retry", client_kind="issued", reason="invalid_grant")
+            job.last = ("The first sign-in code was rejected, which can happen while ChatGPT finishes "
+                        "registering this app. Your browser will open once more — pick the same account. "
+                        "You should not have to approve a new app.")
+            job.output = job.last
+            outcome = self._authorize_once(job, issued, self.store.active() or existing)
+            if outcome.get("cancelled") or job.state == "cancelled":
+                return
+        if outcome.get("tokens"):
+            self._accept_tokens(job, outcome["tokens"], outcome["issued"], outcome["nonce"],
+                                previous=outcome.get("existing"))
+            return
+        if job.state == "running":
+            message = outcome.get("message") or "Sign-in failed."
+            if outcome.get("invalid_grant"):
+                message += (" Chatbox kept this registration. Click Continue with ChatGPT again; "
+                            "the browser should only ask you to confirm the account.")
+            job.fail(message)
+
+    def _authorize_once(self, job, client_id, existing):
+        """Open the browser once and exchange the returned code. Does not mark the job failed."""
         load_discovery()
         host_id = self.store.host_id()
         verifier, challenge = pkce_pair()
         state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Callback)
         httpd.result = None
+        httpd.lock = threading.Lock()
+        httpd.log = lambda step, **fields: self._signin_log(step, **fields)
         port = httpd.server_address[1]
         redirect = f"http://127.0.0.1:{port}{CALLBACK_PATH}"
+        kind = client_kind(client_id)
+        self._signin_log("authorize", client_kind=kind, redirect_host="127.0.0.1",
+                         redirect_path=CALLBACK_PATH, redirect_port=port, resource="set", pkce="S256")
         params = {
             "client_id": client_id,
             "response_type": "code",
@@ -437,60 +551,99 @@ class Service:
         elif existing and existing.get("email"):
             params["login_hint"] = existing["email"]
         url = ENDPOINTS["authorization"] + "?" + urllib.parse.urlencode(params)
-        if client_id != "dynamic_agent_client" and existing.get("id_token"):
+        # id_token_hint is sent only to OpenAI's authorize endpoint, never written to the log or the Accounts panel.
+        if client_id != "dynamic_agent_client" and existing and existing.get("id_token"):
             url += "&" + urllib.parse.urlencode({"id_token_hint": existing["id_token"]})
             job.url = None
-            job.last = "Continue in your browser to sign in again."
+            if not job.last:
+                job.last = "Continue in your browser to sign in again."
         else:
             job.url = url
-            job.last = "Continue with ChatGPT in your browser."
-        try:
-            self.open_url(url)
-        except Exception:
-            job.last = "Open the sign-in page in your browser."
+            if not job.last:
+                job.last = "Continue with ChatGPT in your browser."
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         job.httpd = httpd
-        deadline = time.time() + LOGIN_LIMIT
-        while time.time() < deadline and job.state == "running" and httpd.result is None:
-            time.sleep(0.1)
+        for _ in range(50):  # docs: the loopback listener is up before the browser opens
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.05):
+                    break
+            except OSError:
+                time.sleep(0.02)
         try:
-            httpd.shutdown()
-        except Exception:
-            pass
+            try:
+                self.open_url(url)
+            except Exception:
+                self._signin_log("authorize", client_kind=kind, detail="browser_open_failed")
+                if not job.last:
+                    job.last = "Open the sign-in page in your browser."
+            deadline = time.time() + LOGIN_LIMIT
+            while time.time() < deadline and job.state == "running":
+                with httpd.lock:
+                    if httpd.result is not None:
+                        break
+                time.sleep(0.05)
+            with httpd.lock:
+                captured = dict(httpd.result) if httpd.result else None
+        finally:
+            try:
+                httpd.shutdown()
+            except Exception:
+                pass
+            try:
+                httpd.server_close()
+            except Exception:
+                pass
+            job.httpd = None
         if job.state == "cancelled":
-            return
-        if httpd.result is None:
-            job.fail("Sign-in was not finished. Try Continue with ChatGPT again.")
-            return
-        qs = {k: v[0] for k, v in httpd.result.items() if v}
-        if qs.get("state") != state:
-            job.fail("Sign-in could not be verified (the browser returned an unexpected response).")
-            return
-        if qs.get("error"):
-            if qs["error"] == "access_denied":
-                job.fail("Sign-in was cancelled. ChatGPT plan use has to be allowed for Chatbox.")
-            else:
-                job.fail("Sign-in was not completed.")
-            return
-        issued = qs.get("client_id") or (None if client_id == "dynamic_agent_client" else client_id)
+            self._signin_log("authorize", client_kind=kind, detail="cancelled")
+            return {"cancelled": True}
+        if not captured:
+            self._signin_log("callback", client_kind=kind, detail="no_callback")
+            return {"message": "Sign-in was not finished. Try Continue with ChatGPT again."}
+        if captured.get("state") != state:
+            self._signin_log("callback", client_kind=kind, detail="state_mismatch")
+            return {"message": "Sign-in could not be verified (the browser returned an unexpected response)."}
+        if captured.get("error"):
+            err = captured.get("error") or ""
+            self._signin_log("callback", client_kind=kind,
+                             error=err if err in ("access_denied", "invalid_request", "server_error") else "oauth_error")
+            if err == "access_denied":
+                return {"message": "Sign-in was cancelled. ChatGPT plan use has to be allowed for Chatbox."}
+            return {"message": "Sign-in was not completed."}
+        issued = captured.get("client_id") or (None if client_id == "dynamic_agent_client" else client_id)
         if client_id == "dynamic_agent_client":
             if not issued or issued == "dynamic_agent_client":
-                job.fail("Sign-in did not finish registering Chatbox. Try again.")
-                return
+                self._signin_log("callback", client_kind="dynamic", detail="missing_issued_client")
+                return {"message": "Sign-in did not finish registering Chatbox. Try again."}
         elif issued and issued != client_id:
-            job.fail("Sign-in returned a different ChatGPT registration than the one on this computer.")
-            return
+            self._signin_log("callback", client_kind=client_kind(issued), detail="client_id_mismatch")
+            return {"message": "Sign-in returned a different ChatGPT registration than the one on this computer."}
         else:
             issued = client_id
+        # Retain the registration before exchanging, per the sign-in docs. A rejected code must not
+        # force the next attempt to call dynamic_agent_client again.
+        self.store.remember_client(issued)
+        self._signin_log("callback", client_kind=client_kind(issued),
+                         has_code="yes" if captured.get("code") else "no")
+        if not captured.get("code"):
+            return {"issued": issued, "message": "Sign-in did not return a code. Try again."}
+        form = {"grant_type": "authorization_code", "client_id": issued, "code": captured["code"],
+                "code_verifier": verifier, "redirect_uri": redirect, "resource": RESOURCE}
         try:
             tokens = _json_request("POST", ENDPOINTS["token"],
                                    {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
-                                   _form({"grant_type": "authorization_code", "client_id": issued, "code": qs.get("code", ""),
-                                          "code_verifier": verifier, "redirect_uri": redirect, "resource": RESOURCE}), 30)
-        except HTTPStatus as e:
-            job.fail("Could not finish sign-in. " + _token_error(e.body))
-            return
-        self._accept_tokens(job, tokens, issued, nonce, previous=existing if not fresh else None)
+                                   _form(form), 30)
+        except HTTPStatus as exc:
+            info = oauth_error_fields(exc)
+            self._signin_log("token_exchange", client_kind=client_kind(issued), **info)
+            invalid = info.get("error") == "invalid_grant"
+            return {"invalid_grant": invalid, "issued": issued,
+                    "message": "Could not finish sign-in. " + (_token_error(exc.body) or "Error")}
+        except (urllib.error.URLError, OSError, socket.timeout):
+            self._signin_log("token_exchange", client_kind=client_kind(issued), detail="network")
+            return {"issued": issued, "message": "Could not reach OpenAI to finish sign-in. Try again."}
+        self._signin_log("token_exchange", client_kind=client_kind(issued), http_status=200)
+        return {"tokens": tokens, "issued": issued, "nonce": nonce, "existing": existing}
 
     def _accept_tokens(self, job, tokens, client_id, nonce, previous):
         scopes = (tokens.get("scope") or "").split()
@@ -788,8 +941,18 @@ class _Callback(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def _page(self, text):
+        body = ("<!doctype html><meta charset=utf-8><title>Chatbox</title><p>" + text + "</p>").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        # Browsers request /favicon.ico (and sometimes the callback with no query) after the redirect.
+        # Those must not replace a real code, and a code is single-use at the token endpoint.
         if parsed.path != CALLBACK_PATH:
             self.send_error(404)
             return
@@ -797,14 +960,22 @@ class _Callback(BaseHTTPRequestHandler):
         if host not in ("127.0.0.1", "localhost"):
             self.send_error(403)
             return
-        self.server.result = urllib.parse.parse_qs(parsed.query)
-        body = ("<!doctype html><meta charset=utf-8><title>Chatbox</title>"
-                "<p>Signed in. You can close this tab and return to Chatbox.</p>").encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        qs = parse_oauth_query(parsed.query)
+        log = getattr(self.server, "log", None)
+        if "code" not in qs and "error" not in qs:
+            if log:
+                log("callback", ignored="no_code")
+            self.send_response(204)
+            self.end_headers()
+            return
+        with self.server.lock:
+            if self.server.result is not None:
+                if log:
+                    log("callback", ignored="duplicate")
+                self._page("You can close this tab and return to Chatbox.")
+                return
+            self.server.result = qs
+        self._page("Signed in. You can close this tab and return to Chatbox.")
 
 
 # Filled in by chatbox once DATA_DIR is known.

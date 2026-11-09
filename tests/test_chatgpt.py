@@ -8,6 +8,10 @@ import subprocess
 import tempfile
 import time
 import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import chatgpt
@@ -146,6 +150,148 @@ class TokenTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             attachments.for_chatgpt([attachments.load(folder, saved["id"])])
         self.assertIn("can't take", str(caught.exception))
+
+
+class SignInRecoveryTests(unittest.TestCase):
+    def test_query_keeps_plus_in_the_code(self):
+        parsed = chatgpt.parse_oauth_query("code=abc+def%2F&state=s1&client_id=oaiapp_x")
+        self.assertEqual(parsed["code"], "abc+def/")
+        self.assertEqual(parsed["client_id"], "oaiapp_x")
+
+    def test_callback_ignores_favicon_and_keeps_the_first_code(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), chatgpt._Callback)
+        httpd.result = None
+        httpd.lock = __import__("threading").Lock()
+        notes = []
+        httpd.log = lambda step, **fields: notes.append((step, fields))
+        import threading
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        self.addCleanup(httpd.server_close)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        def get(path):
+            try:
+                with urllib.request.urlopen(base + path, timeout=2) as resp:
+                    return resp.status
+            except urllib.error.HTTPError as exc:
+                return exc.code
+
+        self.assertEqual(get("/favicon.ico"), 404)
+        self.assertIsNone(httpd.result)
+        self.assertEqual(get("/auth/callback"), 204)
+        self.assertIsNone(httpd.result)
+        self.assertEqual(get("/auth/callback?code=first+code&state=ok&client_id=oaiapp_kept"), 200)
+        self.assertEqual(httpd.result["code"], "first+code")
+        self.assertEqual(get("/auth/callback?code=second&state=ok&client_id=oaiapp_other"), 200)
+        self.assertEqual(httpd.result["code"], "first+code")
+        self.assertTrue(any(fields.get("ignored") == "duplicate" for _, fields in notes))
+
+    def _run_login(self, fail_codes):
+        folder = tempfile.mkdtemp()
+        issued = "oaiapp_kept"
+        urls = []
+        exchanges = []
+        secret_code = "abc+def"
+        secret_token = "ACCESS-SECRET-VALUE"
+
+        def open_url(url):
+            urls.append(url)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            redirect = query["redirect_uri"][0]
+            state = query["state"][0]
+            client = query["client_id"][0]
+            code = secret_code if client == "dynamic_agent_client" else "second-code"
+            callback = redirect + "?" + urllib.parse.urlencode(
+                {"code": code, "state": state, "client_id": issued if client == "dynamic_agent_client" else client})
+            urllib.request.urlopen(callback, timeout=5).read()
+
+        def fake_json(method, url, headers, body, timeout):
+            form = urllib.parse.parse_qs(body.decode())
+            exchanges.append(form)
+            code = form["code"][0]
+            if code in fail_codes:
+                raise chatgpt.HTTPStatus(400, {"error": "invalid_grant", "error_description": "expired"})
+            return {"access_token": secret_token, "refresh_token": "REFRESH-SECRET", "id_token": "header.payload.sig",
+                    "expires_in": 3600,
+                    "scope": "openid profile email offline_access resource.invoke " + chatgpt.PLAN_SCOPE}
+
+        original_json = chatgpt._json_request
+        original_verify = chatgpt.verify_id_token
+        original_discovery = chatgpt.load_discovery
+        chatgpt._json_request = fake_json
+        chatgpt.verify_id_token = lambda token, jwks, audience, nonce, now=None: {
+            "sub": "user-1", "email": "a@b.c", "iss": chatgpt.ISSUER}
+        chatgpt.load_discovery = lambda: None
+        self.addCleanup(setattr, chatgpt, "_json_request", original_json)
+        self.addCleanup(setattr, chatgpt, "verify_id_token", original_verify)
+        self.addCleanup(setattr, chatgpt, "load_discovery", original_discovery)
+        service = chatgpt.Service(folder, open_url)
+        service._jwks = lambda force=False: {"keys": []}
+        job = chatgpt._Login()
+        service._login_flow(job, fresh=True)
+        with open(os.path.join(folder, "chatbox.log"), encoding="utf-8") as handle:
+            log = handle.read()
+        return service, job, urls, exchanges, log, issued, secret_code, secret_token
+
+    def test_invalid_grant_retries_once_with_the_issued_client(self):
+        service, job, urls, exchanges, log, issued, secret_code, secret_token = self._run_login({ "abc+def" })
+        self.assertEqual(job.state, "done", job.last)
+        self.assertEqual(len(urls), 2)
+        first = urllib.parse.parse_qs(urllib.parse.urlparse(urls[0]).query)
+        second = urllib.parse.parse_qs(urllib.parse.urlparse(urls[1]).query)
+        self.assertEqual(first["client_id"][0], "dynamic_agent_client")
+        self.assertEqual(first["agent_name_hint"][0], "Chatbox")
+        self.assertEqual(second["client_id"][0], issued)
+        self.assertNotIn("agent_name_hint", second)
+        self.assertEqual(first["ext_agent_host_id"], second["ext_agent_host_id"])
+        self.assertTrue(first["ext_agent_host_id"][0].startswith("urn:uuid:"))
+        self.assertEqual(len(exchanges), 2)
+        for form, url in zip(exchanges, urls):
+            auth = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            redirect = form["redirect_uri"][0]
+            self.assertEqual(redirect, auth["redirect_uri"][0])
+            self.assertTrue(redirect.startswith("http://127.0.0.1:"))
+            self.assertTrue(redirect.endswith("/auth/callback"))
+            self.assertNotIn("localhost", redirect)
+            self.assertEqual(form["resource"][0], "https://api.openai.com/v1")
+            self.assertEqual(form["client_id"][0], issued)
+            challenge = chatgpt.b64url(hashlib.sha256(form["code_verifier"][0].encode()).digest())
+            self.assertEqual(challenge, auth["code_challenge"][0])
+        self.assertEqual(exchanges[0]["code"][0], secret_code)
+        self.assertNotEqual(exchanges[0]["code_verifier"], exchanges[1]["code_verifier"])
+        self.assertNotEqual(exchanges[0]["redirect_uri"], exchanges[1]["redirect_uri"])
+        self.assertTrue(service.logged_in())
+        self.assertEqual(service.store.active()["client_id"], issued)
+        self.assertIn("error=invalid_grant", log)
+        self.assertIn("step=retry", log)
+        self.assertIn("client_kind=issued", log)
+        self.assertIn("http_status=400", log)
+        self.assertNotIn(secret_code, log)
+        self.assertNotIn(secret_token, log)
+        self.assertNotIn(exchanges[0]["code_verifier"][0], log)
+        self.assertNotIn("oaiapp_kept", log)
+
+    def test_second_invalid_grant_stops_and_keeps_the_client(self):
+        service, job, urls, exchanges, log, issued, secret_code, secret_token = self._run_login(
+            {"abc+def", "second-code"})
+        self.assertEqual(job.state, "failed")
+        self.assertIn("kept this registration", job.last)
+        self.assertEqual(len(urls), 2)
+        self.assertEqual(len(exchanges), 2)
+        self.assertFalse(service.logged_in())
+        self.assertEqual(service.store.active()["client_id"], issued)
+        self.assertNotIn(secret_code, log)
+        self.assertNotIn("second-code", log)
+
+    def test_log_drops_secret_fields(self):
+        folder = tempfile.mkdtemp()
+        line = chatgpt.signin_log(os.path.join(folder, "chatbox.log"), "token_exchange",
+                                  code="should-not-appear", client_kind="issued", http_status=400,
+                                  error="invalid_grant")
+        self.assertNotIn("should-not-appear", line)
+        self.assertIn("client_kind=issued", line)
+        self.assertIn("error=invalid_grant", line)
 
 
 if __name__ == "__main__":
