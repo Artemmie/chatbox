@@ -83,7 +83,9 @@ function actionsHTML(withRemember=true){return '<div class="actions"><button typ
   +(withRemember?'<button type="button" data-remember>'+ICON.brain+'Remember</button>':'')+'</div>';}
 function render(item, parent){ // one stored item -> DOM. parent defaults to the thread.
   const d=document.createElement('div');d.item=item;
-  if(item.r==='you'){d.className='m-you';d.innerHTML='<div class="bubble">'+esc(item.t)+'</div>'+actionsHTML();}
+  if(item.r==='you'){d.className='m-you';
+    const files=item.files&&item.files.length?'<div class="files">'+item.files.map(f=>'<span>'+esc(f.name)+'</span>').join('')+'</div>':'';
+    d.innerHTML='<div class="bubble">'+(item.t?esc(item.t):'')+files+'</div>'+actionsHTML();}
   else if(item.r==='bot'||item.r==='err'){d.className='m-bot';const b=item.b;
     d.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]
       +(item.mode?'<span class="meta">'+MODES[item.mode][0]+(item.model?' · '+esc(item.model):'')+(item.u?usageMeta(item.u):'')+'</span>':'')+'</div>'
@@ -212,7 +214,8 @@ function paint(){
   $('#hellosub').textContent=S.none?'Connect an assistant in Accounts to get started.':(picked.length>1?'Asking ':'Chatting with ')+who+' · '+MODES[S.mode][0]+' mode';
   $('#foot').textContent=picked.length>1?'Asking '+who+' at the same time. Each one uses its own sign-in, and Stop cancels all of them.'
     :'Uses your own subscriptions. Assistants can make mistakes — check important info.';
-  $('#accbtn').classList.toggle('warn',S.none);}
+  $('#accbtn').classList.toggle('warn',S.none);
+  if(typeof paintClips==='function') paintClips();}
 $('#p-backend').addEventListener('click',e=>{const t=e.target.closest('.mi');if(!t)return;
   if(t.hasAttribute('data-openacc')){openAccounts();$('#p-backend').classList.remove('open');return;}
   if(t.disabled)return;toggleBackend(t.dataset.b);});
@@ -264,8 +267,44 @@ const msg=$('#msg');
 function grow(){msg.style.height='auto';msg.style.height=Math.min(msg.scrollHeight,240)+'px';}
 msg.addEventListener('input',grow);
 msg.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('#f').requestSubmit();}});
-$('#f').onsubmit=e=>{e.preventDefault();if(S.busy||S.none)return;const t=msg.value.trim();if(!t)return;msg.value='';grow();send(t);};
+$('#f').onsubmit=e=>{e.preventDefault();if(S.busy||S.none)return;const t=msg.value.trim();if(!t&&!FILES.length)return;msg.value='';grow();send(t);};
 $('#send').addEventListener('click',e=>{if(!S.busy)return;e.preventDefault();stopTurns();});
+let FILES=[];
+function canTake(b, kind){
+  if(b==='claude'||b==='cursor'||b==='codex') return true;
+  if(b==='chatgpt') return kind==='text'||kind==='image'||kind==='pdf';
+  if(b==='ollama') return kind==='text'||kind==='image';
+  return false;
+}
+function clipWarning(kind){
+  const who=activeChoice().filter(b=>!canTake(b, kind));
+  if(!who.length) return '';
+  if(kind==='image'&&who.every(b=>b==='ollama')) return 'Ollama only sees this image if the model supports vision';
+  return who.map(b=>NAMES[b]).join(', ')+' can’t take this file';
+}
+function paintClips(){
+  $('#clips').innerHTML=FILES.map((f,i)=>{const w=clipWarning(f.kind);
+    return '<span class="clip'+(w?' warn':'')+'" title="'+esc(w||f.name)+'"><span class="nm">'+esc(f.name)+(w?' · '+esc(w):'')+'</span><button type="button" data-i="'+i+'" title="Remove">×</button></span>';
+  }).join('');
+}
+function readFile(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]||'');r.onerror=()=>rej(r.error);r.readAsDataURL(file);});}
+async function addFiles(list){
+  for(const file of list){
+    if(FILES.length>=8){note('You can attach up to 8 files.');break;}
+    if(file.size>8*1024*1024){note(file.name+' is over 8 MB.');continue;}
+    let data;try{data=await readFile(file);}catch(e){note('Could not read '+file.name+'.');continue;}
+    const meta=await post('/api/attach',{name:file.name,type:file.type||'',data});
+    if(meta.error) note(meta.error); else FILES.push(meta);
+  }
+  paintClips();
+}
+$('#attach').onclick=()=>$('#filepick').click();
+$('#filepick').onchange=()=>{if($('#filepick').files)addFiles($('#filepick').files);$('#filepick').value='';};
+$('#clips').onclick=e=>{const b=e.target.closest('button');if(!b)return;FILES.splice(+b.dataset.i,1);paintClips();};
+$('#f').addEventListener('dragover',e=>{e.preventDefault();$('#f').classList.add('drop');});
+$('#f').addEventListener('dragleave',()=>$('#f').classList.remove('drop'));
+$('#f').addEventListener('drop',e=>{e.preventDefault();$('#f').classList.remove('drop');if(e.dataTransfer&&e.dataTransfer.files.length)addFiles(e.dataTransfer.files);});
+msg.addEventListener('paste',e=>{const files=[...(e.clipboardData&&e.clipboardData.files||[])];if(files.length){addFiles(files);}});
 const SUGGEST=[['Plan a feature','plan','Plan how to add '],['Explain some code','ask','Explain what this code does: '],['Review my project','ask','Look at this folder and tell me what could be improved.'],['Remember something','','/remember ']];
 $('#suggest').innerHTML=SUGGEST.map((s,i)=>'<button type="button" data-i="'+i+'">'+s[0]+'</button>').join('');
 $('#suggest').onclick=e=>{const b=e.target.closest('button');if(!b)return;const s=SUGGEST[b.dataset.i];if(s[1])setMode(s[1]);msg.value=s[2];grow();msg.focus();};
@@ -328,7 +367,7 @@ function pendingBubble(b, mode){
   pend.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]+'</div><div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="tm">'+phase+'…</span></div></div>';
   pend.dataset.phase=phase;return pend;
 }
-async function streamInto(pend, b, text, mode, model){
+async function streamInto(pend, b, text, mode, model, fileIds){
   const phase=pend.dataset.phase||'Thinking';
   let live='', r={}, raf=0;
   const turnId=newTurnId(), ac=new AbortController();
@@ -341,7 +380,7 @@ async function streamInto(pend, b, text, mode, model){
   try{
     const resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},signal:ac.signal,
       body:JSON.stringify({backend:b,message:text,session_id:CHAT.sessions[b],mode,context_version:CHAT.ctx[b],
-        sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home,turn_id:turnId})});
+        sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home,turn_id:turnId,attachments:fileIds||[]})});
     await readEvents(resp, ev=>{
       if(ev.type==='delta'){live+=(ev.text||'');if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
       else if(ev.type==='replace'){live=ev.text||'';if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
@@ -364,21 +403,23 @@ async function send(text){
       addItem({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id});refreshMemCount();}return;}
   let targets=activeChoice().filter(ready);
   if(!targets.length) targets=[S.backend];
-  if(targets.length>1) return sendMany(text, targets);
+  const files=FILES.splice(0,FILES.length);paintClips();
+  const ids=files.map(f=>f.id), shown=files.map(f=>({name:f.name,kind:f.kind}));
+  if(targets.length>1) return sendMany(text, targets, ids, shown);
   const b=targets[0], mode=modeFor(b, S.mode), model=modelFor(b);
   CHAT.workdir=S.workdir||S.home; // each chat keeps its own folder (sessions belong to it)
-  addItem({r:'you',t:text,b});
+  addItem({r:'you',t:text,b,files:shown});
   const pend=pendingBubble(b, mode);
   thread.appendChild(pend);scrollDown();
   S.busy=true;paint();
-  const {r,live}=await streamInto(pend, b, text, mode, model);
+  const {r,live}=await streamInto(pend, b, text, mode, model, ids);
   pend.remove();S.busy=false;
   finishTurn(b, mode, model, r, live);
   saveChat();paint();msg.focus();}
-async function sendMany(text, targets){
+async function sendMany(text, targets, ids, shown){
   const mode=S.mode;
   CHAT.workdir=S.workdir||S.home;
-  addItem({r:'you',t:text,b:targets[0]});
+  addItem({r:'you',t:text,b:targets[0],files:shown||[]});
   await Promise.all(targets.map(loadModelsFor));
   const wrap=document.createElement('div');wrap.className='compare';
   const cols=targets.map(b=>{
@@ -388,7 +429,7 @@ async function sendMany(text, targets){
   });
   thread.appendChild(wrap);$('#main').classList.add('comparing');scrollDown();
   S.busy=true;paint();
-  const results=await Promise.all(cols.map(async c=>({c, ...await streamInto(c.pend, c.b, text, c.mode, c.model)})));
+  const results=await Promise.all(cols.map(async c=>({c, ...await streamInto(c.pend, c.b, text, c.mode, c.model, ids)})));
   const group=newTurnId().slice(0,12);
   let memories=false;
   const bots=[], rest=[];

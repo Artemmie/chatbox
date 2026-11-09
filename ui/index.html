@@ -35,7 +35,10 @@
     <div class="composer-wrap">
       <form class="composer" id="f">
         <textarea id="msg" rows="1" placeholder="How can I help you today?"></textarea>
+        <div id="clips" class="clips"></div>
         <div class="bar">
+          <button type="button" class="pickbtn" id="attach" title="Attach files or images"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.6l-8.5 8.5a5 5 0 0 1-7.1-7.1l8.5-8.5a3.5 3.5 0 0 1 5 5L10.8 18a2 2 0 0 1-2.8-2.8l7.8-7.8"/></svg></button>
+          <input type="file" id="filepick" multiple hidden>
           <div class="pick" id="p-backend"><button type="button" class="pickbtn strong"></button><div class="menu"></div></div>
           <div class="pick" id="p-mode"><button type="button" class="pickbtn"></button><div class="menu"></div></div>
           <button type="button" class="pickbtn" id="folderbtn" title="Folder the assistant works in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="lbl" id="folderlbl"></span></button>

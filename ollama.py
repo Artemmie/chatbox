@@ -172,7 +172,24 @@ def _check_stop(turn):
         raise Stopped()
 
 
-def stream_turn(url, sessions, message, session_id, model, turn, timeout):
+def supports_vision(url, model):
+    """True, False, or None when this Ollama server doesn't say."""
+    if not model:
+        return None
+    try:
+        data = _request(url, "/api/show", body={"model": model}, timeout=5)
+    except (ConnectionError, RuntimeError, TimeoutError):
+        return None
+    caps = data.get("capabilities")
+    if isinstance(caps, list) and caps:
+        return "vision" in caps
+    family = str((data.get("details") or {}).get("family") or "").lower()
+    if any(word in family for word in ("llava", "clip", "moondream", "vision")):
+        return True
+    return None
+
+
+def stream_turn(url, sessions, message, session_id, model, turn, timeout, images=None):
     """Yield ('delta', text) chunks. Return {"reply", "session_id", "usage"} or {"error"}."""
     if not model:  # "Auto": the most recently pulled / changed model
         models = list_models(url)
@@ -186,8 +203,11 @@ def stream_turn(url, sessions, message, session_id, model, turn, timeout):
         model = models[0][0]
     history = sessions.load(session_id)
     history.append({"role": "user", "content": message})
+    sent = [dict(m) for m in history]
+    if images:
+        sent[-1]["images"] = list(images)  # this turn only; saved history stays text
     body = {"model": model, "stream": True,
-            "messages": [{"role": "system", "content": SYSTEM}] + history}
+            "messages": [{"role": "system", "content": SYSTEM}] + sent}
     data = json.dumps(body).encode()
     req = urllib.request.Request(clean_url(url) + "/api/chat", data=data,
                                  headers={"Content-Type": "application/json"})

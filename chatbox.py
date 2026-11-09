@@ -21,6 +21,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts
+import attachments
 import chatgpt
 import memory
 import ollama
@@ -259,12 +260,37 @@ def run_turn(backend, message, session_id, mode, model, workdir):
         return {"error": str(e) or "No reply."}
 
 
-def iter_backend(backend, message, session_id, mode, model, workdir, turn):
+def _attach(backend, message, files, workdir, model):
+    """Return (message, chatgpt_parts, ollama_images). Raises ValueError when refused."""
+    if not files:
+        return message, None, None
+    if backend in ("claude", "cursor", "codex"):
+        return message + "\n\n" + attachments.stage_for_cli(workdir, files), None, None
+    if backend == "chatgpt":
+        return message, attachments.for_chatgpt(files), None
+    if backend == "ollama":
+        if any(item["kind"] == "image" for item in files) and not model:
+            models = ollama.list_models(ollama_url())
+            model = models[0][0] if models else ""
+        vision = ollama.supports_vision(ollama_url(), model) if any(item["kind"] == "image" for item in files) else None
+        extra, images = attachments.for_ollama(files, vision)
+        if extra:
+            message += "\n\n" + extra
+        return message, None, images or None
+    return message, None, None
+
+
+def iter_backend(backend, message, session_id, mode, model, workdir, turn, files=None):
     """Yield stream events and return the result dict (possibly {"error": ...})."""
+    files = files or []
     if backend == "ollama":
         try:
+            message, _, images = _attach(backend, message, files, workdir, model)
+        except ValueError as e:
+            return {"error": str(e)}
+        try:
             result = yield from ollama.stream_turn(ollama_url(), OLLAMA, message, session_id, model,
-                                                   turn, streaming.TOTAL_TIMEOUT)
+                                                   turn, streaming.TOTAL_TIMEOUT, images=images)
         except TimeoutError as e:
             return {"error": str(e) or f"No reply after {streaming.TOTAL_TIMEOUT} seconds."}
         except (ConnectionError, RuntimeError, OSError) as e:
@@ -272,7 +298,12 @@ def iter_backend(backend, message, session_id, mode, model, workdir, turn):
         return result or {"error": "No reply."}
     if backend == "chatgpt":
         try:
-            result = yield from chatgpt.stream_turn(message, session_id, model, turn, streaming.TOTAL_TIMEOUT)
+            message, parts, _ = _attach(backend, message, files, workdir, model)
+        except ValueError as e:
+            return {"error": str(e)}
+        try:
+            result = yield from chatgpt.stream_turn(message, session_id, model, turn,
+                                                   streaming.TOTAL_TIMEOUT, attachments=parts)
         except TimeoutError as e:
             return {"error": str(e) or f"No reply after {streaming.TOTAL_TIMEOUT} seconds."}
         except (ConnectionError, RuntimeError, OSError) as e:
@@ -281,6 +312,10 @@ def iter_backend(backend, message, session_id, mode, model, workdir, turn):
     workdir = os.path.expanduser(workdir or HOME)
     if not os.path.isdir(workdir):
         return {"error": f"Folder not found: {workdir}"}
+    try:
+        message, _, _ = _attach(backend, message, files, workdir, model)
+    except ValueError as e:
+        return {"error": str(e)}
     try:
         result = yield from stream_cli(backend, message, session_id, mode, model, workdir, turn)
     except RuntimeError as e:  # missing executable, unknown backend
@@ -477,6 +512,14 @@ def chat_stream(req):
                 yield {"type": "error", "error": "Stopped.", "stopped": True,
                        "context_version": req.get("context_version")}
                 return
+            try:
+                files = attachments.load_many(DATA_DIR, req.get("attachments") or [])
+            except ValueError as e:
+                yield {"type": "error", "error": str(e), "context_version": req.get("context_version")}
+                return
+            if files and not str(req.get("message") or "").strip():
+                req = dict(req)
+                req["message"] = "Please look at the attached files."
             message, notes = _prepare_message(req)
             backend, model = req.get("backend"), (req.get("model") or "").strip()
             problem = preflight(backend)
@@ -485,7 +528,7 @@ def chat_stream(req):
                 return
             started = time.time()
             gen = iter_backend(backend, message, req.get("session_id"), req.get("mode", "ask"),
-                               model, req.get("workdir"), turn)
+                               model, req.get("workdir"), turn, files)
             try:
                 while True:
                     kind, text = next(gen)
@@ -758,6 +801,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, '{"error":"Only plan files saved by Chatbox can be opened."}')
             accounts.open_path(path)
             return self._send(200, '{"ok":true}')
+        if self.path == "/api/attach":
+            try:
+                meta = attachments.save(DATA_DIR, req.get("name"), req.get("type"), req.get("data"))
+                return self._send(200, json.dumps(meta))
+            except ValueError as e:
+                return self._send(200, json.dumps({"error": str(e)}))
         if self.path == "/api/cancel":
             return self._send(200, json.dumps({"ok": streaming.cancel(str(req.get("turn_id") or ""))}))
         if self.path == "/api/open":

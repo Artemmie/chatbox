@@ -134,6 +134,16 @@ main.is-empty .composer-wrap{padding-bottom:14vh}
 .composer{max-width:780px;margin:0 auto;background:var(--panel);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);padding:12px 12px 8px 16px;transition:border-color .15s}
 .composer:focus-within{border-color:var(--line2)}
 .composer textarea{width:100%;border:0;outline:0;background:transparent;resize:none;min-height:28px;max-height:240px;padding:4px 0;line-height:1.5}
+.composer.drop{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 6%,var(--panel))}
+.clips{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 4px}
+.clips:empty{display:none}
+.clip{display:flex;align-items:center;gap:6px;max-width:240px;border:1px solid var(--line);border-radius:999px;padding:2px 4px 2px 10px;font-size:12px;background:var(--code)}
+.clip.warn{border-color:var(--err)}
+.clip .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.clip button{border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:99px;width:22px;height:22px}
+.clip button:hover{background:var(--hover);color:var(--text)}
+.files{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.files span{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 8px;background:var(--panel)}
 .composer textarea:disabled{cursor:not-allowed}
 .bar{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}
 .bar .grow{flex:1}
