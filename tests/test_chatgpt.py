@@ -66,7 +66,14 @@ class TokenTests(unittest.TestCase):
             chatgpt.verify_id_token(self.mint(payload, alg="none"), self.jwks, "oaiapp_test", "nonce-1", now=now)
         with self.assertRaises(ValueError):
             chatgpt.verify_id_token(token, self.jwks, "oaiapp_test", "other-nonce", now=now)
-        tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+        # A 2048-bit signature is 256 bytes, so its base64url form ends with two
+        # leftover bits. Flipping only the last character can change padding and
+        # leave the decoded signature identical. Change a real byte instead.
+        head, body, sig_b64 = token.split(".")
+        sig = bytearray(chatgpt.b64url_decode(sig_b64))
+        sig[0] ^= 0x01
+        tampered = f"{head}.{body}.{chatgpt.b64url(bytes(sig))}"
+        self.assertNotEqual(chatgpt.b64url_decode(tampered.split(".")[2]), chatgpt.b64url_decode(sig_b64))
         with self.assertRaises(ValueError):
             chatgpt.verify_id_token(tampered, self.jwks, "oaiapp_test", "nonce-1", now=now)
 
