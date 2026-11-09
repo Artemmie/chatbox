@@ -155,7 +155,7 @@ class Accounts:
         info = {"installed": bool(exe), "logged_in": False, "account": None, "source": None}
         if not exe:
             return info
-        if sid == "codex" and exe.endswith("resources/codex"):
+        if sid == "codex" and exe.replace("\\", "/").lower().endswith("resources/codex"):
             info["source"] = "built into the ChatGPT app"
         argv = {"cursor": [exe, "status"], "claude": [exe, "auth", "status"],
                 "codex": [exe, "login", "status"]}[sid]

@@ -46,6 +46,12 @@ os.environ["PATH"] = os.pathsep.join(_path + [d for d in _extra if os.path.isdir
 # otherwise use the app's copy from one of these places (or set CHATBOX_CODEX).
 CODEX_APP_CANDIDATES = [
     os.environ.get("CHATBOX_CODEX", ""),
+    # macOS app bundles (ChatGPT.app replaced the older Codex.app)
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    os.path.join(HOME, "Applications/ChatGPT.app/Contents/Resources/codex"),
+    "/Applications/Codex.app/Contents/Resources/codex",
+    os.path.join(HOME, "Applications/Codex.app/Contents/Resources/codex"),
+    # Linux packages and older layouts
     os.path.join(HOME, "Applications/chatgpt/usr/lib/chatgpt/resources/codex"),
     os.path.join(HOME, "Applications/ChatGPT/resources/codex"),
     "/opt/ChatGPT/resources/codex",

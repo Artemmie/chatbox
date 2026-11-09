@@ -104,12 +104,23 @@ if [ "$OS" = Darwin ]; then
   <key>CFBundleIconFile</key><string>chatbox</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
   # Icon: render the SVG with Quick Look, then build an .icns (skipped if that fails).
+  # qlmanage can hang; cap it so install still finishes without an icon.
   T="$(mktemp -d)"
-  if qlmanage -t -s 1024 -o "$T" "$SRC/chatbox.svg" >/dev/null 2>&1 && [ -f "$T/chatbox.svg.png" ]; then
+  python3 - "$T" "$SRC/chatbox.svg" <<'PY' || true
+import subprocess, sys
+folder, svg = sys.argv[1], sys.argv[2]
+try:
+    subprocess.run(["qlmanage", "-t", "-s", "1024", "-o", folder, svg],
+                   timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+except (OSError, subprocess.TimeoutExpired):
+    sys.exit(1)
+PY
+  if [ -f "$T/chatbox.svg.png" ]; then
     mkdir -p "$T/chatbox.iconset"
     for s in 16 32 128 256 512; do
       sips -z $s $s "$T/chatbox.svg.png" --out "$T/chatbox.iconset/icon_${s}x${s}.png" >/dev/null 2>&1 || true
