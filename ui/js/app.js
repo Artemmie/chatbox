@@ -81,7 +81,7 @@ function setEmpty(){const e=!CHAT.items.length;$('#main').classList.toggle('is-e
   $('#title').textContent=e?'':(CHAT.title||'New chat');}
 function actionsHTML(withRemember=true){return '<div class="actions"><button type="button" data-copy>'+ICON.copy+'Copy</button>'
   +(withRemember?'<button type="button" data-remember>'+ICON.brain+'Remember</button>':'')+'</div>';}
-function render(item){ // one stored item -> DOM
+function render(item, parent){ // one stored item -> DOM. parent defaults to the thread.
   const d=document.createElement('div');d.item=item;
   if(item.r==='you'){d.className='m-you';d.innerHTML='<div class="bubble">'+esc(item.t)+'</div>'+actionsHTML();}
   else if(item.r==='bot'||item.r==='err'){d.className='m-bot';const b=item.b;
@@ -93,11 +93,26 @@ function render(item){ // one stored item -> DOM
     d.innerHTML='<div class="ic">'+ICON.plan+'</div><div class="tx"><b>Plan saved</b><span title="'+esc(item.path)+'">'+esc(item.path)+'</span></div>'
       +'<button class="ghost" type="button" data-planopen>Open</button>'+(NOFOLDER(item.b)?'':'<button class="btn" type="button" data-plango>Implement plan</button>');}
   else{d.className='note';d.innerHTML=esc(item.t)+(item.memId?' <button type="button" data-undo>Undo</button>':'');}
-  thread.appendChild(d);return d;}
+  (parent||thread).appendChild(d);return d;}
+function renderThread(){
+  thread.innerHTML='';
+  const items=CHAT.items;let i=0;
+  while(i<items.length){
+    const it=items[i];
+    if(it.group&&(it.r==='bot'||it.r==='err')){
+      const gid=it.group,g=[];
+      while(i<items.length&&items[i].group===gid&&(items[i].r==='bot'||items[i].r==='err'))g.push(items[i++]);
+      const wrap=document.createElement('div');wrap.className='compare';
+      g.forEach(item=>render(item,wrap));thread.appendChild(wrap);
+    }else render(items[i++]);
+  }
+  $('#main').classList.toggle('comparing',!!thread.querySelector('.compare'));
+  setEmpty();
+}
 function addItem(item,save=true){CHAT.items.push(item);const d=render(item);setEmpty();scrollDown();if(save)saveChat();return d;}
 function note(t){return addItem({r:'note',t,temp:true},false);} // temporary, not saved
 thread.addEventListener('click',async e=>{
-  const t=e.target.closest('button,a');if(!t)return;const row=t.closest('#thread>div');const item=row&&row.item;
+  const t=e.target.closest('button,a');if(!t)return;const row=t.closest('.m-you,.m-bot,.note,.card');const item=row&&row.item;
   if(t.dataset.href!==undefined&&t.tagName==='A'){e.preventDefault();post('/api/open',{url:t.dataset.href});return;}
   if(t.hasAttribute('data-copy')){copy(item.t,t);return;}
   if(t.hasAttribute('data-copycode')){copy(t.closest('.codeblock').querySelector('code').textContent,t);return;}
@@ -134,12 +149,12 @@ $('#chatlist').addEventListener('click',async e=>{const it=e.target.closest('.ch
   if(S.busy){note('Stop the current reply before opening another chat.');return;}
   const c=await fetch('/api/chats/'+id).then(r=>r.json());if(c.error)return;
   CHAT={...newChatState(),...c,sessions:{...fresh(),...c.sessions},ctx:{...fresh(),...c.ctx},sent:{...fresh(),...c.sent}};
-  thread.innerHTML='';CHAT.items.forEach(render);setEmpty();
+  renderThread();
   if(c.workdir){S.workdir=c.workdir;store.set('workdir',c.workdir);}
   if(c.backend&&ready(c.backend))setBackend(c.backend,true);paint();
   document.querySelectorAll('.chatitem').forEach(x=>x.classList.toggle('cur',x.dataset.id===id));
   if(innerWidth<760)$('#app').classList.add('noside');scrollDown();$('#msg').focus();});
-function startNew(){if(S.busy)return;CHAT=newChatState();thread.innerHTML='';setEmpty();
+function startNew(){if(S.busy)return;CHAT=newChatState();thread.innerHTML='';$('#main').classList.remove('comparing');setEmpty();
   document.querySelectorAll('.chatitem').forEach(x=>x.classList.remove('cur'));$('#msg').focus();}
 $('#newchat').onclick=startNew;
 $('#sideclose').onclick=()=>{$('#app').classList.add('noside');store.set('noside','1');};
@@ -148,20 +163,41 @@ if(store.get('noside')==='1'||innerWidth<760)$('#app').classList.add('noside');
 
 // ===== pickers (assistant / mode / model) =====
 function pick(id,btnHTML,itemsHTML){const p=$(id);p.querySelector('.pickbtn').innerHTML=btnHTML;p.querySelector('.menu').innerHTML=itemsHTML;}
-document.addEventListener('click',e=>{const pb=e.target.closest('.pickbtn');const p=pb&&pb.parentElement.classList.contains('pick')?pb.parentElement:null;
-  document.querySelectorAll('.pick.open').forEach(x=>{if(x!==p)x.classList.remove('open');});if(p)p.classList.toggle('open');});
+document.addEventListener('click',e=>{const pb=e.target.closest('.pickbtn');const inside=e.target.closest('.pick');
+  const p=pb&&pb.parentElement.classList.contains('pick')?pb.parentElement:null;
+  document.querySelectorAll('.pick.open').forEach(x=>{if(x!==p&&x!==inside)x.classList.remove('open');});if(p)p.classList.toggle('open');});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.pick.open').forEach(x=>x.classList.remove('open'));});
+function chosen(){
+  let list=null;try{list=JSON.parse(store.get('backends')||'null');}catch(e){list=null;}
+  if(!Array.isArray(list)||!list.length) list=[S.backend];
+  list=list.filter((b,i)=>BACKENDS.includes(b)&&list.indexOf(b)===i);
+  return list.length?list:[S.backend];
+}
+function activeChoice(){
+  if(!ACCLOADED) return chosen();
+  const list=chosen().filter(ready);
+  if(list.length) return list;
+  const one=BACKENDS.find(ready);
+  return one?[one]:[S.backend];
+}
 function paint(){
-  const b=S.backend;
-  pick('#p-backend','<span class="bdot" style="background:'+color(b)+'"></span><span class="lbl">'+NAMES[b]+'</span>'+ICON.chev,
-    '<div class="mh">Assistant</div>'+BACKENDS.map(x=>{const ok=ready(x);const a=ACC[SVC[x]];
+  const picked=activeChoice();
+  const b=picked[0]||S.backend;
+  if(b!==S.backend){S.backend=b;store.set('backend',b);}
+  const blabel=picked.length>1?NAMES[b]+' +'+(picked.length-1):NAMES[b];
+  pick('#p-backend','<span class="bdot" style="background:'+color(b)+'"></span><span class="lbl">'+blabel+'</span>'+ICON.chev,
+    '<div class="mh">Assistant'+(picked.length>1?' · select more than one':'')+'</div>'+BACKENDS.map(x=>{const ok=ready(x);const a=ACC[SVC[x]];
+      const on=picked.includes(x);
       const sub=!ok?(x==='ollama'?(a&&a.installed?'No models yet':'Not running')+' — see Accounts':(a&&!a.installed?'Not installed':'Not connected')+' — set up in Accounts')
-        :x==='ollama'?'Local models, plain chat':x==='chatgpt'?'Plain chat, no files':x==='codex'?'Coding agent by OpenAI':x==='claude'?'Claude Code by Anthropic':'Cursor agent';
-      return '<button type="button" class="mi'+(x===b?' sel':'')+'" data-b="'+x+'"'+(ok?'':' disabled')+'><span class="bdot" style="background:'+color(x)+'"></span><span class="mt"><b>'+NAMES[x]+'</b><span>'+sub+'</span></span>'+ICON.check+'</button>';}).join('')
+        :on&&picked.length>1?'Asked together':x==='ollama'?'Local models, plain chat':x==='chatgpt'?'Plain chat, no files':x==='codex'?'Coding agent by OpenAI':x==='claude'?'Claude Code by Anthropic':'Cursor agent';
+      return '<button type="button" class="mi'+(on?' sel':'')+'" data-b="'+x+'"'+(ok?'':' disabled')+'><span class="bdot" style="background:'+color(x)+'"></span><span class="mt"><b>'+NAMES[x]+'</b><span>'+sub+'</span></span>'+ICON.check+'</button>';}).join('')
       +'<button type="button" class="mi" data-openacc><span class="mt"><span>Manage accounts…</span></span></button>');
-  const chat=NOFOLDER(b);if(chat&&S.mode==='agent')S.mode='ask';
+  const chat=picked.every(NOFOLDER);if(chat&&S.mode==='agent')S.mode='ask';
+  const limited=picked.filter(NOFOLDER);
   pick('#p-mode','<span class="lbl">'+MODES[S.mode][0]+'</span>'+ICON.chev,
-    '<div class="mh">Mode</div>'+Object.entries(MODES).map(([k,[n,d]])=>'<button type="button" class="mi'+(k===S.mode?' sel':'')+'" data-m="'+k+'"'+(chat&&k==='agent'?' disabled':'')+'><span class="mt"><b>'+n+'</b><span>'+(chat&&k==='agent'?'Not available for '+NAMES[b]:d)+'</span></span>'+ICON.check+'</button>').join(''));
+    '<div class="mh">Mode</div>'+Object.entries(MODES).map(([k,[n,d]])=>{
+      const agentSub=limited.length?'Ask for '+limited.map(x=>NAMES[x]).join(' and ')+' — Agent is not available there':d;
+      return '<button type="button" class="mi'+(k===S.mode?' sel':'')+'" data-m="'+k+'"'+(chat&&k==='agent'?' disabled':'')+'><span class="mt"><b>'+n+'</b><span>'+(chat&&k==='agent'?'Not available for '+picked.map(x=>NAMES[x]).join(', '):(k==='agent'?agentSub:d))+'</span></span>'+ICON.check+'</button>';}).join(''));
   $('#folderbtn').hidden=chat;
   $('#folderlbl').textContent=(S.workdir||S.home).replace(/\/+$/,'').split('/').pop()||'/';
   $('#folderbtn').title='Working folder: '+(S.workdir||S.home);
@@ -172,28 +208,47 @@ function paint(){
   $('#send').title=S.busy?'Stop':'Send (Enter)';
   $('#send').innerHTML=S.busy?ICON.stop:ICON.up;
   $('#msg').placeholder=S.none?'No assistant is connected yet — open Accounts to sign in.':S.mode==='plan'?'Describe what to build — you’ll get a plan to review first…':S.mode==='agent'?'What should '+NAMES[b]+' build or change?':'How can I help you today?';
-  $('#hellosub').textContent=S.none?'Connect an assistant in Accounts to get started.':'Chatting with '+NAMES[b]+' · '+MODES[S.mode][0]+' mode';
+  const who=picked.length>1?picked.map(x=>NAMES[x]).join(', '):NAMES[b];
+  $('#hellosub').textContent=S.none?'Connect an assistant in Accounts to get started.':(picked.length>1?'Asking ':'Chatting with ')+who+' · '+MODES[S.mode][0]+' mode';
+  $('#foot').textContent=picked.length>1?'Asking '+who+' at the same time. Each one uses its own sign-in, and Stop cancels all of them.'
+    :'Uses your own subscriptions. Assistants can make mistakes — check important info.';
   $('#accbtn').classList.toggle('warn',S.none);}
 $('#p-backend').addEventListener('click',e=>{const t=e.target.closest('.mi');if(!t)return;
   if(t.hasAttribute('data-openacc')){openAccounts();$('#p-backend').classList.remove('open');return;}
-  if(t.disabled)return;setBackend(t.dataset.b);$('#p-backend').classList.remove('open');});
+  if(t.disabled)return;toggleBackend(t.dataset.b);});
 $('#p-mode').addEventListener('click',e=>{const t=e.target.closest('.mi');if(!t||t.disabled)return;setMode(t.dataset.m);$('#p-mode').classList.remove('open');});
-function setBackend(b,quiet){if(b===S.backend){paint();return;}S.backend=b;store.set('backend',b);
+function setBackend(b,quiet){
+  const same=b===S.backend&&chosen().length===1;
+  S.backend=b;store.set('backend',b);store.set('backends',JSON.stringify([b]));
+  if(same){paint();return;}
   if(!quiet&&CHAT.items.length)note('Switched to '+NAMES[b]+(CHAT.sessions[b]?' — continuing its part of this chat':''));
   paint();loadModels();}
+function toggleBackend(b){
+  if(ACCLOADED&&!ready(b))return;
+  let list=activeChoice().slice();
+  if(list.includes(b)){if(list.length===1)return;list=list.filter(x=>x!==b);}
+  else list.push(b);
+  S.backend=list[0];store.set('backend',S.backend);store.set('backends',JSON.stringify(list));
+  if(CHAT.items.length)note(list.length>1?'Asking '+list.map(x=>NAMES[x]).join(', ')+' together.':'Now chatting with '+NAMES[list[0]]+' only.');
+  list.forEach(loadModelsFor);paint();}
 function setMode(m){S.mode=m;store.set('mode',m);paint();}
 
 const modelCache={};
-async function loadModels(){const b=S.backend;
-  if(!modelCache[b]){modelCache[b]='loading';paintModels();
-    try{modelCache[b]=await fetch('/api/models?backend='+b).then(r=>r.json());}catch(e){modelCache[b]=[];}}
+async function loadModels(){return loadModelsFor(S.backend);}
+async function loadModelsFor(b){
+  if(!b)return;
+  if(!modelCache[b]){modelCache[b]='loading';if(b===S.backend)paintModels();
+    try{modelCache[b]=await fetch('/api/models?backend='+encodeURIComponent(b)).then(r=>r.json());}catch(e){modelCache[b]=[];}}
   if(b===S.backend)paintModels();}
-function currentModel(){const list=Array.isArray(modelCache[S.backend])?modelCache[S.backend]:[];const v=store.get('model_'+S.backend)||'';
+function modelFor(b){const list=Array.isArray(modelCache[b])?modelCache[b]:[];const v=store.get('model_'+b)||'';
   return list.some(m=>m[0]===v)?v:'';}
+function currentModel(){return modelFor(S.backend);}
 function paintModels(){const list=modelCache[S.backend];const cur=currentModel();
+  const several=activeChoice().length>1;
   const label=list==='loading'?'Loading…':cur?((list.find(m=>m[0]===cur)||[cur,cur])[1]):'Auto';
-  pick('#p-model','<span class="lbl">'+esc(label)+'</span>'+ICON.chev,
-    '<div class="mh">Model</div><button type="button" class="mi'+(cur?'':' sel')+'" data-model=""><span class="mt"><b>Auto</b><span>'+(S.backend==='ollama'?'Your most recently downloaded model':'Let '+NAMES[S.backend]+' choose')+'</span></span>'+ICON.check+'</button>'
+  pick('#p-model','<span class="lbl">'+esc(several?NAMES[S.backend]+' · '+label:label)+'</span>'+ICON.chev,
+    '<div class="mh">Model'+(several?' for '+NAMES[S.backend]:'')+'</div>'+(several?'<div class="mh" style="text-transform:none;letter-spacing:0;font-size:12px">Other selected assistants use their own saved model.</div>':'')
+    +'<button type="button" class="mi'+(cur?'':' sel')+'" data-model=""><span class="mt"><b>Auto</b><span>'+(S.backend==='ollama'?'Your most recently downloaded model':'Let '+NAMES[S.backend]+' choose')+'</span></span>'+ICON.check+'</button>'
     +(Array.isArray(list)?list.map(([id,l])=>'<button type="button" class="mi'+(id===cur?' sel':'')+'" data-model="'+esc(id)+'"><span class="mt"><b>'+esc(l)+'</b></span>'+ICON.check+'</button>').join(''):''));}
 $('#p-model').addEventListener('click',e=>{const t=e.target.closest('.mi');if(!t)return;store.set('model_'+S.backend,t.dataset.model);paintModels();$('#p-model').classList.remove('open');});
 
@@ -237,45 +292,49 @@ function modelLabel(b, model, usage){
   const list=modelCache[b];
   return (Array.isArray(list)&&list.find(m=>m[0]===model)||[model,model])[1];
 }
-function finishTurn(b, mode, model, r, partial){
+function modeFor(b, mode){return NOFOLDER(b)&&mode==='agent'?'ask':mode;}
+function turnParts(b, mode, model, r, partial, group){
   if(r.session_id)CHAT.sessions[b]=r.session_id;
   if(r.context_version!==undefined)CHAT.ctx[b]=r.context_version;
   const label=modelLabel(b, model, r.usage);
   const u=r.usage?{tok:(r.usage.input||0)+(r.usage.output||0),s:r.usage.seconds,cost:r.usage.cost}:null;
+  const bots=[], rest=[];
+  const bot=item=>{if(group)item.group=group;bots.push(item);};
   if(r.stopped){
-    if(partial&&partial.trim()) addItem({r:'bot',t:partial,b,mode,model:label});
-    addItem({r:'note',t:'You stopped this reply.'});
+    if(partial&&partial.trim()) bot({r:'bot',t:partial,b,mode,model:label});
+    else bot({r:'err',t:'Stopped.',b,mode});
+    rest.push({r:'note',t:group?'You stopped '+NAMES[b]+'.':'You stopped this reply.'});
   }else if(r.type==='done'||(r.reply!==undefined&&!r.error)){
-    addItem({r:'bot',t:r.reply||'(empty reply)',b,mode,model:label,u});
+    bot({r:'bot',t:r.reply||'(empty reply)',b,mode,model:label,u});
   }else{
-    if(partial&&partial.trim()) addItem({r:'bot',t:partial,b,mode,model:label});
-    addItem({r:'err',t:(r.error||'No reply.'),b,mode});
+    if(partial&&partial.trim()) bot({r:'bot',t:partial,b,mode,model:label});
+    bot({r:'err',t:(r.error||'No reply.'),b,mode});
   }
-  if(r.plan_file)addItem({r:'plan',path:r.plan_file,b});
-  if(r.plan_error)addItem({r:'note',t:r.plan_error});
+  if(r.plan_file) rest.push({r:'plan',path:r.plan_file,b});
+  if(r.plan_error) rest.push({r:'note',t:r.plan_error});
   if(r.notes_used&&r.notes_used.length){CHAT.sent[b]=(CHAT.sent[b]||[]).concat(r.notes_used.map(n=>n.path));
-    addItem({r:'note',t:'📓 Used from Obsidian: '+r.notes_used.map(n=>n.title).join(', ')});}
-  (r.saved_memories||[]).forEach(m=>addItem({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id}));
-  if(r.saved_memories&&r.saved_memories.length)refreshMemCount();
+    rest.push({r:'note',t:'📓 Used from Obsidian: '+r.notes_used.map(n=>n.title).join(', ')});}
+  (r.saved_memories||[]).forEach(m=>rest.push({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id}));
+  return {bots, rest, memories:!!(r.saved_memories&&r.saved_memories.length)};
 }
-
-async function send(text){
-  const rm=text.match(/^\/remember\s+([\s\S]+)/i);
-  if(rm){const r=await post('/api/memory',{action:'add',text:rm[1]});
-    if(r.error)note(r.error);else{const m=r.memories.find(x=>x.text.toLowerCase()===rm[1].trim().replace(/\s+/g,' ').toLowerCase())||r.memories[r.memories.length-1];
-      addItem({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id});refreshMemCount();}return;}
-  const b=S.backend,mode=S.mode,model=currentModel();
-  CHAT.workdir=S.workdir||S.home; // each chat keeps its own folder (sessions belong to it)
-  addItem({r:'you',t:text,b});
+function finishTurn(b, mode, model, r, partial){
+  const parts=turnParts(b, mode, model, r, partial, null);
+  parts.bots.concat(parts.rest).forEach(item=>addItem(item));
+  if(parts.memories) refreshMemCount();
+}
+function pendingBubble(b, mode){
   const pend=document.createElement('div');pend.className='m-bot';
   const phase=mode==='plan'?'Planning':mode==='agent'?'Working':'Thinking';
   pend.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]+'</div><div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="tm">'+phase+'…</span></div></div>';
-  thread.appendChild(pend);scrollDown();
-  S.busy=true;paint();const t0=Date.now();
-  const tick=setInterval(()=>{const s=Math.round((Date.now()-t0)/1000);const tm=pend.querySelector('.tm');if(tm)tm.textContent=phase+'… '+s+'s';},1000);
+  pend.dataset.phase=phase;return pend;
+}
+async function streamInto(pend, b, text, mode, model){
+  const phase=pend.dataset.phase||'Thinking';
   let live='', r={}, raf=0;
   const turnId=newTurnId(), ac=new AbortController();
   inflight.set(turnId, ac);
+  const t0=Date.now();
+  const tick=setInterval(()=>{const s=Math.round((Date.now()-t0)/1000);const tm=pend.querySelector('.tm');if(tm)tm.textContent=phase+'… '+s+'s';},1000);
   const paintLive=()=>{let box=pend.querySelector('.md');
     if(!box){const th=pend.querySelector('.thinking');if(th)th.outerHTML='<div class="md"></div>';box=pend.querySelector('.md');}
     if(box)box.innerHTML=md(live);scrollDown();};
@@ -287,18 +346,61 @@ async function send(text){
       if(ev.type==='delta'){live+=(ev.text||'');if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
       else if(ev.type==='replace'){live=ev.text||'';if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
       else if(ev.type==='status'){let s=pend.querySelector('.statusline');
-        if(!s){s=document.createElement('div');s.className='statusline';pend.querySelector('.body').appendChild(s);}
-        s.textContent=ev.text||'';}
+        if(!s){s=document.createElement('div');s.className='statusline';const body=pend.querySelector('.body');if(body)body.appendChild(s);}
+        if(s)s.textContent=ev.text||'';}
       else if(ev.type==='done'||ev.type==='error') r=ev;
     });
   }catch(err){
     if(err.name==='AbortError'){if(!r.type)r={type:'error',error:'Stopped.',stopped:true};}
     else if(!r.type) r={type:'error',error:String(err)};
-  }finally{inflight.delete(turnId);}
-  if(raf) cancelAnimationFrame(raf);
-  clearInterval(tick);pend.remove();S.busy=false;
-  finishTurn(b, mode, model, r.type?r:{type:'error',error:r.error||'No reply.'}, live);
+  }finally{inflight.delete(turnId);clearInterval(tick);if(raf)cancelAnimationFrame(raf);}
+  return {r:r.type?r:{type:'error',error:r.error||'No reply.'}, live};
+}
+
+async function send(text){
+  const rm=text.match(/^\/remember\s+([\s\S]+)/i);
+  if(rm){const r=await post('/api/memory',{action:'add',text:rm[1]});
+    if(r.error)note(r.error);else{const m=r.memories.find(x=>x.text.toLowerCase()===rm[1].trim().replace(/\s+/g,' ').toLowerCase())||r.memories[r.memories.length-1];
+      addItem({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id});refreshMemCount();}return;}
+  let targets=activeChoice().filter(ready);
+  if(!targets.length) targets=[S.backend];
+  if(targets.length>1) return sendMany(text, targets);
+  const b=targets[0], mode=modeFor(b, S.mode), model=modelFor(b);
+  CHAT.workdir=S.workdir||S.home; // each chat keeps its own folder (sessions belong to it)
+  addItem({r:'you',t:text,b});
+  const pend=pendingBubble(b, mode);
+  thread.appendChild(pend);scrollDown();
+  S.busy=true;paint();
+  const {r,live}=await streamInto(pend, b, text, mode, model);
+  pend.remove();S.busy=false;
+  finishTurn(b, mode, model, r, live);
   saveChat();paint();msg.focus();}
+async function sendMany(text, targets){
+  const mode=S.mode;
+  CHAT.workdir=S.workdir||S.home;
+  addItem({r:'you',t:text,b:targets[0]});
+  await Promise.all(targets.map(loadModelsFor));
+  const wrap=document.createElement('div');wrap.className='compare';
+  const cols=targets.map(b=>{
+    const m=modeFor(b, mode), pend=pendingBubble(b, m);
+    wrap.appendChild(pend);
+    return {b, mode:m, model:modelFor(b), pend};
+  });
+  thread.appendChild(wrap);$('#main').classList.add('comparing');scrollDown();
+  S.busy=true;paint();
+  const results=await Promise.all(cols.map(async c=>({c, ...await streamInto(c.pend, c.b, text, c.mode, c.model)})));
+  const group=newTurnId().slice(0,12);
+  let memories=false;
+  const bots=[], rest=[];
+  results.forEach(({c,r,live})=>{
+    const parts=turnParts(c.b, c.mode, c.model, r, live, group);
+    bots.push(...parts.bots);rest.push(...parts.rest);memories=memories||parts.memories;
+  });
+  bots.forEach(item=>CHAT.items.push(item));
+  rest.forEach(item=>CHAT.items.push(item));
+  renderThread();scrollDown();saveChat();
+  if(memories) refreshMemCount();
+  S.busy=false;paint();msg.focus();}
 
 // ===== settings & memory =====
 function renderSettings(p){
