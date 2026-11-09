@@ -2,11 +2,11 @@
 
 One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux and macOS — using the subscriptions you already pay for. No API keys. Plus your own local models through **Ollama**.
 
-A clean, modern chat window: sidebar with your saved chats, a centered conversation with proper formatting (headings, lists, tables, code with a Copy button), and one composer where you pick the assistant, mode, model and folder. Switch assistants mid-conversation — each keeps its own part of the chat.
+A clean, modern chat window: sidebar with your saved chats, a centered conversation with proper formatting (headings, lists, tables, code with a Copy button), and one composer where you pick the assistant, mode, model and folder. Switch assistants mid-conversation — each keeps its own part of the chat. You can also ask several of them the same thing and watch the answers arrive side by side.
 
 ## How it works
 
-Chatbox doesn't talk to any AI service itself. Each message is handed to the official command-line tool for the assistant you picked, and that tool uses **your own sign-in**:
+Chatbox doesn't keep an API key. Cursor, Claude and Codex go through their official command-line tools and **your own sign-in**. ChatGPT uses OpenAI's documented [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source) flow for a local open-source app (your ChatGPT plan, still no API key). Ollama stays on your own computer.
 
 ```
 You type in Chatbox
@@ -15,17 +15,20 @@ You type in Chatbox
 chatbox.py (local server on 127.0.0.1)
       ├── Cursor  → cursor-agent  → your Cursor account
       ├── Claude  → claude        → your Claude Pro/Max subscription
-      ├── Codex   → codex         → your ChatGPT account
-      ├── ChatGPT → codex, as a plain chat (no files, no commands)
+      ├── Codex   → codex         → your ChatGPT account (coding agent)
+      ├── ChatGPT → Sign in with ChatGPT → your ChatGPT plan (plain chat)
       └── Ollama  → Ollama's local server (http://localhost:11434) → models on your computer
 ```
 
-Usage counts toward each service's plan, exactly as if you used its own app.
+Usage counts toward each service's plan, exactly as if you used its own app. Replies stream in as they are generated. **Stop** cancels the one in progress (or all of them, if you asked several).
 
 ## Features
 
-- **Four assistants plus local models**, one window. Assistants that aren't connected are greyed out until you sign in.
-- **Chat history** – every chat is saved and listed in the sidebar (Today, Yesterday, …). Reopen one and keep going: each assistant resumes its own session, in the chat's own folder.
+- **Five assistants plus local models**, one window. Assistants that aren't connected are greyed out until you sign in. In the assistant menu, select more than one to ask them together; each answer streams in its own column and **Stop** cancels every one of them.
+- **Streaming replies** – Claude, Cursor, Codex, ChatGPT and Ollama show text as it is produced. If a CLI build can't stream token by token, Chatbox falls back to the next output mode that build supports and still shows the answer when it arrives.
+- **Stop and timeouts** – the send button becomes **Stop** while a reply is running and actually kills that request. A CLI that never speaks is stopped after 3 minutes, one that goes quiet after 5, and every turn after 10 (`CHATBOX_START_TIMEOUT`, `CHATBOX_IDLE_TIMEOUT`, `CHATBOX_TIMEOUT`). A missing tool, a signed-out account, or a hang is reported in the chat instead of spinning forever.
+- **Files and images** – drop them on the composer or use the paperclip. Cursor, Claude and Codex get the files in the working folder and are asked to read them. ChatGPT (your plan) can take text, images and PDFs. Ollama can take text, and images when that model can see them. A chip on the composer says when a selected assistant can't take a file; that assistant's reply then says so too.
+- **Chat history** – every chat is saved and listed in the sidebar (Today, Yesterday, …). Reopen one and keep going: each assistant resumes its own session, in the chat's own folder. A side-by-side question stays grouped.
 - **Ask / Plan / Agent** – *Ask* answers and may read files. *Plan* writes an implementation plan and saves it as a Markdown file (`<folder>/plans/…md`) for you to review — nothing is changed yet. Click **Implement plan** to hand it to *Agent*, which edits files and runs commands and ticks off the plan's checklist as it goes.
 - **Model picker** – *Auto*, or any model your plan offers (Cursor's list is loaded live).
 - **Shared memory** – save facts once ("I use Unity 6 and C#", "answer in Russian") and every assistant gets them at the start of each chat. Add them in **Settings**, type `/remember …`, click **Remember** under any message, or let the assistant save new facts by itself (with **Undo**).
@@ -33,12 +36,13 @@ Usage counts toward each service's plan, exactly as if you used its own app.
 - **Obsidian as long-term memory** – connect your vault (Accounts → Obsidian; vaults are detected automatically). Memories then live in `Chatbox/Memories.md` in your vault, shared by every assistant and editable in Obsidian. Notes related to your message are found and given to the assistant, and **Save to Obsidian** stores a whole chat in `Chatbox/Chats/`.
 - **Usage** – messages, tokens, reply time and (for Claude) cost per assistant and model, with a daily chart and a 7 / 30 day / all-time view. Each reply also shows its tokens, time and cost. Subscription limits aren't visible to the command-line tools, so they aren't shown.
 - **Accounts screen** – see what's connected and **Install / Sign in / Sign out** each service without a terminal. Sign-in happens in your browser; Chatbox never sees your password.
-- **Local models (Ollama)** – every model you've pulled or built with Ollama (`ollama pull qwen3:8b`, or your own from a Modelfile) shows up in the Model menu. *Auto* uses the one you downloaded or changed most recently. It's a plain chat like ChatGPT mode: Ask and Plan, no files or commands. Ollama doesn't remember conversations, so Chatbox keeps each one in `~/.local/share/chatbox/ollama/` and sends the history with every message. The server address (default `http://localhost:11434`, or another computer on your network) is set in Accounts → Ollama.
+- **Local models (Ollama)** – every model you've pulled or built with Ollama (`ollama pull qwen3:8b`, or your own from a Modelfile) shows up in the Model menu. *Auto* uses the one you downloaded or changed most recently. Ask and Plan, no Agent mode. Ollama doesn't remember conversations, so Chatbox keeps each one in `~/.local/share/chatbox/ollama/` and sends the history with every message. Text files are pasted into the message; images are sent only when the model reports vision. The server address (default `http://localhost:11434`, or another computer on your network) is set in Accounts → Ollama.
+- **ChatGPT, separate from Codex** – Accounts → **Continue with ChatGPT** is OpenAI's sign-in for open-source apps on this computer. It uses your ChatGPT Plus or Pro plan (no API key) and chats through the public Responses API, with nothing stored on OpenAI's side (`store: false`). It is a plain chat: Ask and Plan, not Agent. Codex remains the coding agent and has its own sign-in. There is no official ChatGPT app you can drive as a general chat CLI without an API key; this sign-in is the supported way to use the plan itself. Chatbox does not scrape the ChatGPT website or reuse browser cookies.
 - **Desktop app** – its own window and icon: a menu entry on Linux, `Chatbox.app` on macOS.
 
 ## Requirements
 
-- Linux with a desktop (tested on KDE Plasma / Wayland), or macOS (Apple silicon or Intel; new, not yet tested on a real Mac)
+- Linux with a desktop (tested on KDE Plasma / Wayland), or macOS (Apple silicon or Intel). The Mac install path is checked on GitHub's macOS runners (`install.sh --browser` plus a localhost smoke test). It has not been clicked through on a physical Mac.
 - Python 3.9+ (on macOS: `xcode-select --install`, or python.org / Homebrew)
 - A subscription for each assistant you want: Cursor account, Claude Pro or Max, ChatGPT (Plus/Pro, or free with limits)
 
@@ -74,17 +78,18 @@ Uninstall with `./uninstall.sh` (your sign-ins and the tools stay).
 |---|---|---|
 | Cursor | `cursor-agent` | `https://cursor.com/install` |
 | Claude | `claude` (Claude Code) | `https://claude.ai/install.sh` |
-| Codex & ChatGPT | `codex` | OpenAI's GitHub releases → `~/.local/bin/codex` |
+| Codex | `codex` | OpenAI's GitHub releases → `~/.local/bin/codex` |
+| ChatGPT | Sign in with ChatGPT (built into Chatbox, no separate tool) | Accounts → Continue with ChatGPT |
 | Ollama | Ollama's local server (no command-line tool needed) | Not installed by Chatbox — get it from `https://ollama.com/download` |
 
-If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled inside it (set `CHATBOX_CODEX=/path/to/codex` if it isn't found). That copy may be older and accept fewer models.
+If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled inside it (`ChatGPT.app` on macOS, or set `CHATBOX_CODEX=/path/to/codex` if it isn't found). That copy may be older and accept fewer models. That binary is only for **Codex**. **ChatGPT** chat does not use it.
 
 ## Privacy & security
 
 - The server listens on `127.0.0.1` only and rejects requests from other websites.
-- Chatbox stores no passwords, tokens or API keys. Each tool keeps its own sign-in in its usual place.
-- In **Agent** mode the assistant can change files in the chosen folder — use it on folders you trust.
-- ChatGPT mode always runs read-only from an empty folder.
+- Chatbox stores no API keys. Cursor, Claude and Codex keep their own sign-in. ChatGPT's OAuth tokens (from Sign in with ChatGPT) are stored only on this computer, in `~/.local/share/chatbox/chatgpt/account.json`, mode `0600`. Sign out clears them and asks OpenAI to revoke the refresh token. You can also disconnect Chatbox in ChatGPT settings.
+- In **Agent** mode the assistant can change files in the chosen folder — use it on folders you trust. Files you attach for Cursor, Claude or Codex are copied into `<folder>/.chatbox-attach/` so the assistant can read them.
+- ChatGPT chat does not edit files. It can read text, images and PDFs you attach, and those bytes are sent to the Responses API with the message.
 - Ollama chats go only to the Ollama address you set (your own computer by default). If you point it at another computer, messages travel over your network unencrypted unless that address uses `https://`.
 - With Obsidian connected, notes that match your message are sent to the assistant you are chatting with (turn off in **Settings**). Chatbox only writes inside `Chatbox/` in your vault, plus `plans/` in the project folder you choose.
 - Usage statistics are stored locally in `~/.local/share/chatbox/usage.jsonl` (no message text, only counts). Clear them in **Usage**.
@@ -96,14 +101,26 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 | File | Purpose |
 |---|---|
 | `chatbox.py` | Local server: chat, history, settings and account APIs |
-| `ui/` | The interface, split into `index.html`, `style.css` and `js/app.js` (no build step) |
-| `accounts.py` | Status, install, sign-in and sign-out for each tool |
+| `ui/` | The interface: `index.html`, `style.css` and `js/app.js` (no build step) |
+| `streaming.py` | Run a CLI, parse its JSON events, cancel it, enforce timeouts |
+| `chatgpt.py` | Sign in with ChatGPT and stream the Responses API |
+| `attachments.py` | Save dropped files and describe what each assistant can accept |
+| `accounts.py` | Status, install, sign-in and sign-out for each command-line tool |
 | `memory.py` | Settings, memories and custom instructions |
 | `usage.py` | Usage log and summaries for the Usage screen |
 | `ollama.py` | Ollama: model list, status, and chats with locally saved history |
 | `vault.py` | Obsidian vault: detection, memory note, note search, saving chats |
 | `app.py` | Desktop window (PyQt6 WebEngine) |
+| `tests/` | `python3 -m unittest discover -s tests` (stdlib only; CLIs are mocked) |
 | `install.sh` / `uninstall.sh` | Per-user install, no root needed |
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+GitHub Actions runs that on Ubuntu and macOS. The macOS job also runs `./install.sh --browser` and checks that `Chatbox.app` serves the page on `127.0.0.1`.
 
 ## License
 
