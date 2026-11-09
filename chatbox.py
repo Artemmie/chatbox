@@ -422,11 +422,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def _send(self, code, body, ctype="application/json"):
+    def _send(self, code, body, ctype="application/json", headers=None):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -443,8 +445,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._local_only():
             return self._send(403, '{"error":"forbidden"}')
-        if self.path in ("/", "/index.html"):
-            return self._send(200, page(), "text/html; charset=utf-8")
+        ui = ui_file(self.path)
+        if ui:
+            body, ctype = ui
+            return self._send(200, body, ctype, {"Cache-Control": "no-cache"})
         if self.path == "/api/status":
             return self._send(200, json.dumps(status()))
         if self.path.startswith("/api/models?backend="):
@@ -551,12 +555,31 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps(result))
 
 
-UI_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html")
+UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+_UI_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+             ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
 
 
-def page():
-    with open(UI_FILE, encoding="utf-8") as f:
-        return f.read()
+def ui_file(url_path):
+    """Return (text, content-type) for a ui/ file, or None. Rejects paths outside ui/."""
+    if url_path in ("/", "/index.html"):
+        rel = "index.html"
+    elif url_path.startswith("/ui/"):
+        rel = url_path[len("/ui/"):]
+    else:
+        return None
+    rel = os.path.normpath(rel)
+    if rel.startswith("..") or os.path.isabs(rel):
+        return None
+    root = os.path.abspath(UI_DIR)
+    full = os.path.abspath(os.path.join(root, rel))
+    if full != root and not full.startswith(root + os.sep):
+        return None
+    if not os.path.isfile(full):
+        return None
+    ctype = _UI_TYPES.get(os.path.splitext(full)[1], "application/octet-stream")
+    with open(full, encoding="utf-8") as f:
+        return f.read(), ctype
 
 
 def main():

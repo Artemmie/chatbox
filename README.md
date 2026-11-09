@@ -96,7 +96,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 | File | Purpose |
 |---|---|
 | `chatbox.py` | Local server: chat, history, settings and account APIs |
-| `ui.html` | The interface (single page, no external files) |
+| `ui/` | The interface, split into `index.html`, `style.css` and `js/app.js` (no build step) |
 | `accounts.py` | Status, install, sign-in and sign-out for each tool |
 | `memory.py` | Settings, memories and custom instructions |
 | `usage.py` | Usage log and summaries for the Usage screen |
