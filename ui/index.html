@@ -103,6 +103,17 @@
       <div id="memlist"></div>
       <div class="row" style="justify-content:space-between"><code class="path" id="mempath"></code><button class="ghost" id="memclear">Delete all</button></div>
     </section>
+    <section class="sec" id="syncsec">
+      <div class="sec-h"><b>Sync</b></div>
+      <div class="muted">Keep chats and memories in a folder of your Obsidian vault, so they follow the vault to your other computers. Sign-ins stay on this computer. Off until you turn it on.</div>
+      <div id="syncneed" class="muted">Connect an Obsidian vault in Accounts first.</div>
+      <div id="syncopts">
+        <label class="chk"><input type="checkbox" id="sync_chats"> Sync chats and memory through the vault</label>
+        <form class="row" id="syncform"><span class="muted">Sync folder</span><input class="field" id="sync_folder" placeholder="Chatbox" style="flex:1;min-width:160px"><button class="ghost">Save</button></form>
+        <div class="muted" id="syncstatus"></div>
+        <button class="ghost" id="syncmove" type="button">Move existing chats to sync folder</button>
+      </div>
+    </section>
     <section class="sec">
       <div class="sec-h"><b>Custom instructions</b></div>
       <div class="muted">What every assistant should know about you, or how it should reply.</div>

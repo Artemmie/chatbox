@@ -26,6 +26,7 @@ import chatgpt
 import memory
 import ollama
 import streaming
+import sync as syncmod
 import usage as usagemod
 import vault as vaultmod
 
@@ -595,7 +596,14 @@ def _chat_path(cid):
     return os.path.join(CHATS_DIR, cid + ".json")
 
 
+def _sync_root():
+    return syncmod.root_for(MEMORY)
+
+
 def list_chats():
+    root = _sync_root()
+    if root:
+        return syncmod.list_chats(root)
     out = []
     try:
         names = os.listdir(CHATS_DIR)
@@ -615,6 +623,9 @@ def list_chats():
 
 
 def load_chat(cid):
+    root = _sync_root()
+    if root:
+        return syncmod.load_chat(root, cid)
     try:
         with open(_chat_path(cid), encoding="utf-8") as f:
             return json.load(f)
@@ -623,15 +634,25 @@ def load_chat(cid):
 
 
 def save_chat(chat):
+    if not CHAT_ID.match(chat.get("id") or ""):
+        raise ValueError("Bad chat id")
+    chat["updated"] = time.time()
+    root = _sync_root()
+    if root:
+        syncmod.save_chat(root, chat)
+        return
     path = _chat_path(chat.get("id"))
     os.makedirs(CHATS_DIR, exist_ok=True)
-    chat["updated"] = time.time()
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(chat, f, ensure_ascii=False)
     os.replace(path + ".tmp", path)
 
 
 def delete_chat(cid):
+    root = _sync_root()
+    if root:
+        syncmod.delete_chat(root, cid)
+        return
     try:
         os.remove(_chat_path(cid))
     except FileNotFoundError:
@@ -643,7 +664,8 @@ def settings_payload():
     where = (os.path.join(v.path, vaultmod.MEMORY_NOTE) if v and MEMORY.settings()["memory_in_vault"]
              else MEMORY.memories_path)
     return {"settings": MEMORY.settings(), "memories": MEMORY.memories(), "path": where,
-            "vault": v.info() if v else None, "detected": vaultmod.detect_vaults()}
+            "vault": v.info() if v else None, "detected": vaultmod.detect_vaults(),
+            "sync": syncmod.describe(MEMORY)}
 
 
 def status():
@@ -787,6 +809,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(settings_payload()))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+        if self.path == "/api/sync" and req.get("action") == "move":
+            root = syncmod.root_for(MEMORY)
+            if not root:
+                if not MEMORY.vault():
+                    return self._send(200, json.dumps({"error": "Connect an Obsidian vault first (Accounts).",
+                                                       **settings_payload()}))
+                return self._send(200, json.dumps({"error": "Turn on Sync in Settings first.",
+                                                   **settings_payload()}))
+            try:
+                moved = syncmod.move_existing(DATA_DIR, root)
+            except Exception as e:
+                return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+            return self._send(200, json.dumps({**moved, **settings_payload()}))
         if self.path == "/api/usage" and req.get("action") == "clear":
             USAGE.clear()
             return self._send(200, json.dumps(USAGE.summary(30)))

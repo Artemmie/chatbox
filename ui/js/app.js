@@ -136,7 +136,10 @@ function saveChat(){if(!CHAT.items.some(i=>i.r==='you'))return;
   if(!CHAT.title){const f=CHAT.items.find(i=>i.r==='you');CHAT.title=f.t.replace(/\s+/g,' ').slice(0,60);}
   CHAT.backend=S.backend;clearTimeout(saveTimer);
   saveTimer=setTimeout(async()=>{const items=CHAT.items.filter(i=>!i.temp);
-    renderChatList(await post('/api/chats',{action:'save',chat:{...CHAT,items}}));},250);
+    const list=await post('/api/chats',{action:'save',chat:{...CHAT,items}});
+    const row=Array.isArray(list)&&list.find(c=>c.id===CHAT.id);
+    if(row)CHAT.updated=row.updated;
+    renderChatList(list);},250);
   setEmpty();}
 function renderChatList(list){
   if(!Array.isArray(list))return;
@@ -448,6 +451,11 @@ function renderSettings(p){
   $('#use_memory').checked=p.settings.use_memory;$('#auto_memory').checked=p.settings.auto_memory;
   $('#memory_in_vault').checked=p.settings.memory_in_vault;$('#vault_search').checked=p.settings.vault_search;
   $('#vaultopts').hidden=!p.vault;$('#vaulthint').hidden=!!p.vault;
+  const sync=p.sync||{};
+  $('#syncneed').hidden=!!sync.vault;$('#syncopts').hidden=!sync.vault;
+  $('#sync_chats').checked=!!p.settings.sync_chats;
+  if(document.activeElement!==$('#sync_folder'))$('#sync_folder').value=p.settings.sync_folder||'Chatbox';
+  $('#syncstatus').textContent=sync.active?('Syncing in '+sync.path):(sync.vault?'Sync is off. Chats stay on this computer.':'');
   if(document.activeElement!==$('#instructions'))$('#instructions').value=p.settings.instructions||'';
   $('#mempath').textContent=p.memories.length+' saved · '+p.path;$('#memclear').disabled=!p.memories.length;
   $('#memlist').innerHTML=p.memories.length?p.memories.map(m=>'<div class="mem" data-id="'+m.id+'"><input class="field" value="'+esc(m.text)+'" maxlength="500"><span class="src">'+(m.source==='assistant'?'by assistant':m.source==='obsidian'?'in Obsidian':'by you')+(m.created?' · '+esc(m.created):'')+'</span><button class="icon" type="button" title="Delete">'+ICON.trash+'</button></div>').join('')
@@ -456,7 +464,17 @@ function renderSettings(p){
 async function memAct(body){const r=await post(body.settings?'/api/settings':'/api/memory',body);if(r.error)alert(r.error);renderSettings(r);CHAT.ctx=fresh();return r;}
 function refreshMemCount(){fetch('/api/settings').then(r=>r.json()).then(p=>{$('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';if($('#set').open)renderSettings(p);});}
 $('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch('/api/settings').then(r=>r.json()));};
-for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
+for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','sync_chats'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
+$('#syncform').onsubmit=async e=>{e.preventDefault();await memAct({settings:{sync_folder:$('#sync_folder').value}});};
+$('#syncmove').onclick=async()=>{
+  if(!$('#sync_chats').checked){alert('Turn on sync first. The copies stay in the vault; the originals on this computer are not deleted.');return;}
+  const r=await post('/api/sync',{action:'move'});
+  if(r.error)alert(r.error);
+  else alert('Copied '+r.copied+' chat'+(r.copied===1?'':'s')+' and '+r.memories+' '+(r.memories===1?'memory':'memories')+'. Originals are still on this computer.');
+  if(r.settings)renderSettings(r);
+  const list=await fetch('/api/chats').then(x=>x.json());
+  renderChatList(list);
+};
 $('#instsave').onclick=async()=>{await memAct({settings:{instructions:$('#instructions').value}});
   $('#instmsg').textContent='Saved — new chats will use it.';setTimeout(()=>$('#instmsg').textContent='',3000);};
 $('#memadd').onsubmit=async e=>{e.preventDefault();const t=$('#memtext').value.trim();if(!t)return;const r=await memAct({action:'add',text:t});if(!r.error)$('#memtext').value='';};
@@ -635,5 +653,18 @@ const h=new Date().getHours();$('#greet').textContent=h<5?'Up late? What can I h
 fetch('/api/status').then(r=>r.json()).then(s=>{S.home=s.home;paint();loadModels();});
 fetch('/api/settings').then(r=>r.json()).then(renderObsidian);
 fetch('/api/chats').then(r=>r.json()).then(renderChatList);
+async function refreshChats(){
+  if(document.hidden||S.busy)return;
+  let list;try{list=await fetch('/api/chats').then(r=>r.json());}catch(e){return;}
+  renderChatList(list);
+  if(!CHAT||!CHAT.id||S.busy)return;
+  const row=Array.isArray(list)&&list.find(c=>c.id===CHAT.id);
+  if(!row||!(row.updated> (CHAT.updated||0)+0.001))return;
+  const c=await fetch('/api/chats/'+CHAT.id).then(r=>r.json());
+  if(c.error||S.busy||!CHAT||CHAT.id!==c.id)return;
+  CHAT={...newChatState(),...c,sessions:{...fresh(),...c.sessions},ctx:{...fresh(),...c.ctx},sent:{...fresh(),...c.sent}};
+  renderThread();scrollDown();
+}
+setInterval(refreshChats,4000);
 refreshAccounts(true).then(list=>{if(list&&!list.some(a=>a.installed&&a.logged_in))openAccounts();});
 msg.focus();

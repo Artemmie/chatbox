@@ -34,6 +34,7 @@ Usage counts toward each service's plan, exactly as if you used its own app. Rep
 - **Shared memory** – save facts once ("I use Unity 6 and C#", "answer in Russian") and every assistant gets them at the start of each chat. Add them in **Settings**, type `/remember …`, click **Remember** under any message, or let the assistant save new facts by itself (with **Undo**).
 - **Custom instructions** – one place to tell every assistant how to reply.
 - **Obsidian as long-term memory** – connect your vault (Accounts → Obsidian; vaults are detected automatically). Memories then live in `Chatbox/Memories.md` in your vault, shared by every assistant and editable in Obsidian. Notes related to your message are found and given to the assistant, and **Save to Obsidian** stores a whole chat in `Chatbox/Chats/`.
+- **Sync through the vault** – Settings → Sync, off until you turn it on. Chats and memories are then stored as Markdown in a folder of the vault (default `Chatbox/`), so Obsidian Sync or iCloud carries them to your other computers. Each chat is one note (`## You`, `## Claude`, …). Sign-ins, tokens and attached file bytes stay on the computer that created them. Chatbox rescans the folder every few seconds. If both computers edit the same chat, new messages are appended; a real clash is saved beside it as `Title (conflict hostname).md` and the other computer's note is left as it was.
 - **Usage** – messages, tokens, reply time and (for Claude) cost per assistant and model, with a daily chart and a 7 / 30 day / all-time view. Each reply also shows its tokens, time and cost. Subscription limits aren't visible to the command-line tools, so they aren't shown.
 - **Accounts screen** – see what's connected and **Install / Sign in / Sign out** each service without a terminal. Sign-in happens in your browser; Chatbox never sees your password.
 - **Local models (Ollama)** – every model you've pulled or built with Ollama (`ollama pull qwen3:8b`, or your own from a Modelfile) shows up in the Model menu. *Auto* uses the one you downloaded or changed most recently. Ask and Plan, no Agent mode. Ollama doesn't remember conversations, so Chatbox keeps each one in `~/.local/share/chatbox/ollama/` and sends the history with every message. Text files are pasted into the message; images are sent only when the model reports vision. The server address (default `http://localhost:11434`, or another computer on your network) is set in Accounts → Ollama.
@@ -93,8 +94,8 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 - Ollama chats go only to the Ollama address you set (your own computer by default). If you point it at another computer, messages travel over your network unencrypted unless that address uses `https://`.
 - With Obsidian connected, notes that match your message are sent to the assistant you are chatting with (turn off in **Settings**). Chatbox only writes inside `Chatbox/` in your vault, plus `plans/` in the project folder you choose.
 - Usage statistics are stored locally in `~/.local/share/chatbox/usage.jsonl` (no message text, only counts). Clear them in **Usage**.
-- Chats are saved locally in `~/.local/share/chatbox/chats/` (one JSON file each). Delete them from the sidebar.
-- Memories and custom instructions are stored locally in `~/.local/share/chatbox/memories.json` and `settings.json`. They are sent only to the assistant you are chatting with, at the start of a chat (or when they change). Turn this off in **Settings**.
+- Chats are saved locally in `~/.local/share/chatbox/chats/` (one JSON file each), unless Sync is on, in which case the shared copy is Markdown in your vault. Delete them from the sidebar.
+- Memories and custom instructions are stored locally in `~/.local/share/chatbox/memories.json` and `settings.json`. With Sync on, memories are also kept in the vault's `Memories.md`. Custom instructions stay on this computer. They are sent only to the assistant you are chatting with, at the start of a chat (or when they change). Turn this off in **Settings**.
 
 ## Files
 
@@ -110,6 +111,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 | `usage.py` | Usage log and summaries for the Usage screen |
 | `ollama.py` | Ollama: model list, status, and chats with locally saved history |
 | `vault.py` | Obsidian vault: detection, memory note, note search, saving chats |
+| `sync.py` | Optional vault sync: Markdown chats and memories, conflict-safe |
 | `app.py` | Desktop window (PyQt6 WebEngine) |
 | `tests/` | `python3 -m unittest discover -s tests` (stdlib only; CLIs are mocked) |
 | `install.sh` / `uninstall.sh` | Per-user install, no root needed |
@@ -121,6 +123,17 @@ python3 -m unittest discover -s tests -v
 ```
 
 GitHub Actions runs that on Ubuntu and macOS. The macOS job also runs `./install.sh --browser` and checks that `Chatbox.app` serves the page on `127.0.0.1`.
+
+## Sync between two computers
+
+Use this when the same Obsidian vault is already synced between the machines (Obsidian Sync, iCloud, Syncthing, or a shared folder).
+
+1. On each computer, connect the vault in Accounts → Obsidian.
+2. Open Settings → Sync. Leave the folder as `Chatbox` unless you want a different folder inside the vault. Turn on **Sync chats and memory through the vault**.
+3. On the computer that already has chats, click **Move existing chats to sync folder**. This copies them. The originals in `~/.local/share/chatbox/chats/` are not deleted.
+4. Wait for the vault to finish syncing, then open Chatbox on the other computer with the same setting. The sidebar picks up new and updated notes within a few seconds. You do not need to restart it.
+
+Sign-ins are not in that folder. Install and sign in to Cursor, Claude, Codex and ChatGPT on each computer. Attached file bytes stay on the computer where you attached them; the note only records the file name.
 
 ## License
 

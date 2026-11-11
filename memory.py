@@ -23,6 +23,8 @@ DEFAULTS = {
     "memory_in_vault": True,  # keep memories in the vault's Chatbox/Memories.md
     "vault_search": True,   # give the assistant notes related to each message
     "ollama_url": "http://localhost:11434",  # where the Ollama server runs
+    "sync_chats": False,    # keep chats and memories in the Obsidian vault
+    "sync_folder": "Chatbox",  # folder inside the vault, shared by Obsidian Sync
 }
 REMEMBER = re.compile(r"^[ \t>*_-]*REMEMBER:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -63,14 +65,30 @@ class Store:
         v = self.vault()
         return v if v and self.settings()["memory_in_vault"] else None
 
-    def memories(self):
+    def _sync_root(self):
+        import sync as syncmod
+        return syncmod.root_for(self)
+
+    def _local_memories(self):
         v = self._vault_memory()
         if v:
             return v.read_memories()
         items = self._load(self.memories_path, [])
         return [m for m in items if isinstance(m, dict) and m.get("text")]
 
+    def memories(self):
+        import sync as syncmod
+        root = self._sync_root()
+        if root and syncmod.memories_exist(root):
+            return syncmod.read_memories(root)
+        return self._local_memories()
+
     def _put(self, items):
+        root = self._sync_root()
+        if root:
+            import sync as syncmod
+            syncmod.write_memories(root, items)
+            return
         v = self._vault_memory()
         if v:
             v.write_memories(items)
@@ -97,10 +115,16 @@ class Store:
         with self.lock:
             s = self.settings()
             for k, v in (new or {}).items():
-                if k in ("use_memory", "auto_memory", "memory_in_vault", "vault_search"):
+                if k in ("use_memory", "auto_memory", "memory_in_vault", "vault_search", "sync_chats"):
                     s[k] = bool(v)
                 elif k == "vault_path":
                     s[k] = str(v)
+                elif k == "sync_folder":
+                    import sync as syncmod
+                    try:
+                        s[k] = syncmod.clean_rel(v)
+                    except ValueError:
+                        s[k] = "Chatbox"
                 elif k == "ollama_url":
                     s[k] = str(v).strip()[:500]
                 elif k == "instructions":
