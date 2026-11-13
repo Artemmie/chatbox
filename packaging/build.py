@@ -43,7 +43,17 @@ def pyinstaller_command():
         "--add-data", _add_data(ROOT / "ui", "ui"),
         "--add-data", _add_data(ROOT / "chatbox.svg", "."),
         "--add-data", _add_data(ROOT / "version.txt", "."),
-        "--collect-all", "PyQt6",
+        # The window imports these. Collecting all of PyQt6 also copies unused
+        # macOS frameworks twice and the build stops with FileExistsError.
+        "--hidden-import", "PyQt6.QtWebEngineWidgets",
+        "--hidden-import", "PyQt6.QtWebEngineCore",
+        "--hidden-import", "PyQt6.QtWebChannel",
+        "--hidden-import", "PyQt6.QtNetwork",
+        "--hidden-import", "PyQt6.QtPrintSupport",
+        "--collect-data", "PyQt6.QtWebEngineCore",
+        "--collect-binaries", "PyQt6.QtWebEngineCore",
+        "--collect-data", "PyQt6.QtWebEngineWidgets",
+        "--collect-binaries", "PyQt6.QtWebEngineWidgets",
         "--specpath", str(DIST),
         "--distpath", str(DIST),
         "--workpath", str(ROOT / "build"),

@@ -143,6 +143,8 @@ class ReleaseAssetTests(unittest.TestCase):
         spec.loader.exec_module(mod)
         cmd = mod.pyinstaller_command()
         sep = ";" if os.name == "nt" else ":"
+        version_file = os.path.join(str(mod.ROOT), "version.txt")
+        self.addCleanup(lambda: os.path.isfile(version_file) and os.remove(version_file))
         datas = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--add-data"]
         self.assertEqual(len(datas), 3)
         root = str(mod.ROOT.resolve())

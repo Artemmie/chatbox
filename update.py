@@ -81,6 +81,9 @@ def version_is_newer(remote, local):
 
 
 def bundled_version():
+    """The version baked into a PyInstaller build. A source checkout does not use version.txt."""
+    if not getattr(sys, "frozen", False):
+        return ""
     path = os.path.join(runtime.source_root(), "version.txt")
     try:
         with open(path, encoding="utf-8") as handle:
