@@ -175,3 +175,21 @@ Settings → Updates:
 ## License
 
 MIT
+
+## Screenshots
+
+![Main chat window](docs/screenshots/chat.png)
+
+The main window, with a short conversation and saved chats in the sidebar.
+
+![Assistant menu](docs/screenshots/assistants.png)
+
+The assistant menu: Cursor, Claude, Codex, ChatGPT, and Ollama.
+
+![Settings](docs/screenshots/settings.png)
+
+Settings, with Sync through an Obsidian vault and the Updates section.
+
+![Memory](docs/screenshots/memory.png)
+
+Shared memories in Settings, including the option to keep them in Obsidian.
