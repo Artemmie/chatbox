@@ -268,8 +268,12 @@ def chat_filename(chat, suffix=""):
     return f"{_safe_title(chat.get('title'))}{extra}.md"
 
 
-def _heading_name(item):
-    """Display name, and a model suffix for assistant turns."""
+def _heading_name(item, default_backend=""):
+    """Display name, and a model suffix for assistant turns.
+
+    A turn with no assistant id still uses the chat's backend, so the note names
+    who answered instead of a generic Assistant.
+    """
     role = item.get("r")
     if role == "you":
         return "You", None
@@ -277,7 +281,7 @@ def _heading_name(item):
         return "Note", None
     if role == "plan":
         return "Plan", None
-    base = NAMES.get(item.get("b"), "Assistant")
+    base = NAMES.get(item.get("b") or default_backend or "", "Assistant")
     model = item.get("model")
     if isinstance(model, str):
         model = re.sub(r"\s+", " ", model).strip(" ·")
@@ -364,7 +368,7 @@ def render_chat(chat):
         if not isinstance(item, dict) or item.get("temp"):
             continue
         _scrub_files(item)
-        base, model = _heading_name(item)
+        base, model = _heading_name(item, chat.get("backend") or "")
         lines.append("### " + (f"{base} · {model}" if model else base))
         lines.append("")
         meta = {}

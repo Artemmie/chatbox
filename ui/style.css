@@ -1,13 +1,13 @@
 :root{
   --bg:#faf9f5;--side:#f3f1ea;--panel:#ffffff;--text:#1f1e1d;--muted:#6f6d66;--faint:#9a988f;
   --line:#e6e3da;--line2:#d9d5ca;--hover:rgba(31,30,29,.06);--you:#efece3;--code:#f5f3ee;
-  --accent:#c96442;--err:#b3261e;--ok:#1f8a5b;--shadow:0 1px 2px rgba(0,0,0,.04),0 6px 24px rgba(0,0,0,.06);
+  --accent:#c96442;--err:#b3261e;--ok:#1f8a5b;--warn:#c48a00;--shadow:0 1px 2px rgba(0,0,0,.04),0 6px 24px rgba(0,0,0,.06);
   --cursor:#2a78d6;--claude:#c96442;--codex:#10a37f;--chatgpt:#6e56cf;--ollama:#c0407a;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#262624;--side:#1f1e1d;--panel:#30302e;--text:#f5f4ef;--muted:#a6a49c;--faint:#7d7b74;
   --line:#3a3936;--line2:#4a4945;--hover:rgba(255,255,255,.06);--you:#3a3936;--code:#1c1c1b;
-  --accent:#d97757;--err:#f2b8b5;--ok:#5fd39b;--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px rgba(0,0,0,.35);
+  --accent:#d97757;--err:#f2b8b5;--ok:#5fd39b;--warn:#e6c35c;--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px rgba(0,0,0,.35);
   --cursor:#3f86e0;--claude:#d06a48;--codex:#12a07a;--chatgpt:#8a74ea;--ollama:#e0679e;
 }}
 *{box-sizing:border-box}
@@ -43,6 +43,21 @@ aside{width:268px;background:var(--side);border-right:1px solid var(--line);disp
 .bdot{width:8px;height:8px;border-radius:50%;flex:none}
 .side-empty{color:var(--faint);font-size:13px;padding:8px}
 .side-bottom{border-top:1px solid var(--line);padding:8px}
+.authrow{display:flex;flex-direction:column;gap:1px;padding:2px 4px 6px}
+.authlabel{font-size:11px;color:var(--faint);font-weight:500;padding:2px 6px 1px}
+.authitem{display:flex;align-items:center;gap:6px;min-height:22px;padding:1px 6px;font-size:12px;color:var(--text)}
+.authitem .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.authnote{font-size:11px;color:var(--faint);white-space:nowrap}
+.authsub{font-size:11px;line-height:1.35;color:var(--faint);padding:0 8px 4px 20px;word-break:break-word}
+.authcmd{font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted);padding:0 8px 4px 20px;word-break:break-all}
+.authsign{border:1px solid var(--line);background:transparent;border-radius:999px;padding:0 7px;font-size:11px;line-height:18px;cursor:pointer;color:var(--text)}
+.authsign:hover{background:var(--hover)}
+.authsign:disabled{opacity:.5;cursor:default}
+.sdot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--faint)}
+.sdot.ready{background:var(--ok)}
+.sdot.signed_out{background:var(--warn)}
+.sdot.missing{background:var(--faint)}
+.sdot.unknown{background:transparent;box-shadow:inset 0 0 0 1.5px var(--warn)}
 .side-item{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;background:transparent;border-radius:8px;cursor:pointer;text-align:left;font-size:14px}
 .side-item:hover{background:var(--hover)}
 .side-item svg{width:18px;height:18px;color:var(--muted)}
@@ -177,6 +192,7 @@ main.is-empty .composer-wrap{padding-bottom:14vh}
 .mi:disabled{opacity:.45;cursor:not-allowed}
 .mi:disabled:hover{background:transparent}
 .mi .mt{flex:1;min-width:0}.mi .mt b{font-weight:500;display:block}.mi .mt span{display:block;font-size:12px;color:var(--muted)}
+.mi .sdot{margin-top:7px}
 .mi .check{width:16px;height:16px;color:var(--accent);visibility:hidden}.mi.sel .check{visibility:visible}
 .mi .bdot{margin-top:7px}
 .mh{font-size:11px;color:var(--faint);padding:6px 10px 2px;text-transform:uppercase;letter-spacing:.04em}
@@ -264,3 +280,16 @@ details.advanced[open]{display:flex;flex-direction:column;gap:8px}
   .thread{padding:8px 14px 20px}.composer-wrap{padding:0 10px 10px}
   .hello{font-size:26px}.card{margin-left:0}
 }
+
+/* Hand off / compare. The control is added from app.js so index.html can change independently. */
+.top{position:relative;z-index:5}
+.actions{flex-wrap:wrap}
+.actions.on{opacity:1}
+.askpop{flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;padding-top:4px}
+.askpop[hidden]{display:none}
+.askpop button{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:3px 8px;font-size:12px;color:var(--text);cursor:pointer}
+.askpop button:hover{background:var(--hover)}
+.askpop button:disabled{opacity:.45;cursor:not-allowed}
+.pick.down .menu{top:calc(100% + 6px);bottom:auto}
+#p-handoff{flex:none}
+#p-handoff .pickbtn{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:5px 12px;max-width:none}
