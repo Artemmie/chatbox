@@ -632,13 +632,25 @@ class Library:
         return os.path.join(self.root, "Chats")
 
     def _guard(self, path):
-        """Keep a chat path inside the vault when one is known, else inside the sync folder."""
+        """Keep a chat path inside the vault when one is known, else inside the sync folder.
+
+        The sync root is a real path, while the vault path may still be the symlink
+        or short name it was opened with. Either form is inside the vault.
+        """
         if self.vault_path:
-            base = os.path.abspath(self.vault_path)
             full = os.path.abspath(path)
-            if full != base and not full.startswith(base + os.sep):
-                raise ValueError("Sync folder must stay inside the vault.")
-            return full
+            candidates = (
+                (self.vault_path, path),
+                (os.path.realpath(self.vault_path), path),
+                (os.path.realpath(self.vault_path), os.path.realpath(path)),
+                (self.vault_path, os.path.realpath(path)),
+            )
+            for parent, child in candidates:
+                parent = os.path.normcase(os.path.abspath(parent))
+                child = os.path.normcase(os.path.abspath(child))
+                if child == parent or child.startswith(parent + os.sep):
+                    return full
+            raise ValueError("Sync folder must stay inside the vault.")
         return inside(self.root, path)
 
     def _iter_markdown(self):
@@ -1338,7 +1350,9 @@ def backfill_local(store):
             expected = _expected_dir(root, chat, vault_path)
         except Exception:
             continue
-        misplaced = [path for path in paths if os.path.abspath(os.path.dirname(path)) != expected]
+        expected_real = os.path.normcase(os.path.realpath(expected))
+        misplaced = [path for path in paths
+                     if os.path.normcase(os.path.realpath(os.path.dirname(path))) != expected_real]
         if not misplaced and len(paths) == 1:
             continue
         try:

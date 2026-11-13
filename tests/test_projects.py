@@ -102,8 +102,8 @@ class BackfillTests(unittest.TestCase):
                 if name.endswith(".md") and sync._note_id(path) == "ddd444ddd444":
                     copies.append(path)
         self.assertEqual(len(copies), 1)
-        self.assertTrue(copies[0].replace("\\", "/").startswith(
-            os.path.join(root, "Archive").replace("\\", "/")))
+        archive = os.path.normcase(os.path.realpath(os.path.join(root, "Archive")))
+        self.assertTrue(os.path.normcase(os.path.realpath(copies[0])).startswith(archive + os.sep))
         sync.backfill_local(box.MEMORY)
         copies_again = [os.path.join(dirpath, name)
                         for dirpath, _dirs, files in os.walk(root)
@@ -223,7 +223,7 @@ class NoticeTests(unittest.TestCase):
 
     def test_version_is_read_not_hardcoded(self):
         path = os.path.join(os.path.dirname(__file__), "..", "packaging", "build.py")
-        spec = importlib.util.spec_from_file_location("pack_build_version", path)
+        spec = importlib.util.spec_from_file_location("pack_build_version_env", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         previous = os.environ.get("CHATBOX_VERSION")
