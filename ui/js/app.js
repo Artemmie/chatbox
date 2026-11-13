@@ -464,22 +464,24 @@ async function sendMany(text, targets, ids, shown){
 function renderSettings(p){
   $('#use_memory').checked=p.settings.use_memory;$('#auto_memory').checked=p.settings.auto_memory;
   $('#memory_in_vault').checked=p.settings.memory_in_vault;$('#vault_search').checked=p.settings.vault_search;
-  $('#vaultopts').hidden=!p.vault;$('#vaulthint').hidden=!!p.vault;
+  const notes=p.notes||{};
+  const mode=notes.mode||p.settings.notes_storage||'off';
+  document.querySelectorAll('input[name="notes"]').forEach(el=>{el.checked=el.value===mode;});
+  $('#vaultopts').hidden=mode==='off';$('#vaulthint').hidden=mode!=='off';
   const sync=p.sync||{};
-  $('#syncneed').hidden=!!sync.vault;$('#syncopts').hidden=!sync.vault;
-  $('#sync_chats').checked=!!p.settings.sync_chats;
   if(document.activeElement!==$('#sync_folder'))$('#sync_folder').value=p.settings.sync_folder||'Chatbox';
-  if(p.vault)VAULT=p.vault;
+  if(p.vault)VAULT=p.vault; else if(mode!=='chatbox') VAULT=null;
   const app=p.obsidian_app||{};
-  const blocked=!p.vault;
-  $('#syncnotice').hidden=!blocked;
-  if(blocked){
-    const missing=!app.installed;
-    $('#syncnoticetext').textContent=missing?'Obsidian not found. ':(app.notice||'No Obsidian vault selected.');
-    $('#obsdownload').hidden=!missing;
-  }
+  const missing=!notes.installed&&!app.installed;
+  $('#syncnotice').hidden=!missing;
+  if(missing){$('#syncnoticetext').textContent='Obsidian not found. ';$('#obsdownload').hidden=false;}
+  $('#obsidianopts').hidden=mode!=='obsidian';
+  $('#noteslocalhint').hidden=mode!=='chatbox';
+  $('#noteslocalpath').hidden=mode!=='chatbox';
+  $('#noteslocalpath').textContent=notes.local_path||'';
+  const banner=$('#notebanner'); if(banner) banner.hidden=!notes.banner;
   PROJECTS=p.projects||[];renderProject();
-  $('#syncstatus').textContent=sync.active?('Syncing in '+sync.path):(sync.vault?'Sync is off. Chats stay on this computer.':'');
+  $('#syncstatus').textContent=sync.active?('Syncing in '+sync.path):(mode==='obsidian'?'Pick a vault folder to start saving notes.':'');
   if(document.activeElement!==$('#instructions'))$('#instructions').value=p.settings.instructions||'';
   $('#auto_update').checked=p.settings.auto_update!==false;
   $('#auto_install_updates').checked=!!p.settings.auto_install_updates;
@@ -490,11 +492,28 @@ function renderSettings(p){
 async function memAct(body){const r=await post(body.settings?'/api/settings':'/api/memory',body);if(r.error)alert(r.error);renderSettings(r);CHAT.ctx=fresh();return r;}
 function refreshMemCount(){fetch('/api/settings').then(r=>r.json()).then(p=>{$('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';if($('#set').open)renderSettings(p);});}
 $('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch('/api/settings').then(r=>r.json()));};
-for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','sync_chats','auto_update','auto_install_updates'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
+for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','auto_update','auto_install_updates'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
+document.querySelectorAll('input[name="notes"]').forEach(el=>el.onchange=async()=>{
+  if(!el.checked)return;
+  if(el.value==='obsidian'){renderSettings(await fetch('/api/settings').then(r=>r.json()));el.checked=true;$('#obsidianopts').hidden=false;$('#vaultpickpath').focus();return;}
+  const r=await post('/api/notes',{mode:el.value});
+  if(r.error)alert(r.error);
+  renderSettings(r);
+});
 $('#syncform').onsubmit=async e=>{e.preventDefault();await memAct({settings:{sync_folder:$('#sync_folder').value}});};
 $('#set').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
-$('#choosevault').onclick=()=>{$('#vaultpick').hidden=false;$('#vaultpickpath').focus();};
-$('#vaultpick').onsubmit=async e=>{e.preventDefault();const v=$('#vaultpickpath').value.trim();if(v)await obsAct({action:'connect',path:v});};
+$('#vaultpick').onsubmit=async e=>{
+  e.preventDefault();
+  const v=$('#vaultpickpath').value.trim();
+  if(!v)return;
+  const cur=(await fetch('/api/settings').then(r=>r.json()).catch(()=>({})));
+  const from=(cur.notes&&cur.notes.mode)||'';
+  let copy=false;
+  if(from==='chatbox') copy=confirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
+  const r=await post('/api/notes',{mode:'obsidian',path:v,copy});
+  if(r.error)alert(r.error);
+  renderSettings(r);if(r.vault)renderObsidian(r);
+};
 $('#projectpick').onchange=()=>{
   let value=$('#projectpick').value;
   if(value==='__new__'){
@@ -504,8 +523,8 @@ $('#projectpick').onchange=()=>{
   }
   CHAT.project=value;CHAT.project_lock=true;saveChat();renderProject();
 };
+$('#notebanner').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
 $('#syncmove').onclick=async()=>{
-  if(!$('#sync_chats').checked){alert('Turn on sync first. The copies stay in the vault; the originals on this computer are not deleted.');return;}
   const r=await post('/api/sync',{action:'move'});
   if(r.error)alert(r.error);
   else alert('Copied '+r.copied+' chat'+(r.copied===1?'':'s')+' and '+r.memories+' '+(r.memories===1?'memory':'memories')+'. Originals are still on this computer.');
