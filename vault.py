@@ -30,10 +30,26 @@ also like some any all one has had our out get got its it's let use using want n
 
 MEMORY_HEADER = """# Chatbox Memories
 
+Part of [[Chatbox]]
+
 Memories saved by Chatbox and shared with every assistant (Cursor, Claude, Codex, ChatGPT).
 Each line that starts with "- " is one memory. Edit or delete lines freely.
 
 """
+
+
+def _with_root_link(head):
+    """Keep the user's lines and make sure the note links to [[Chatbox]]."""
+    if "[[Chatbox]]" in head:
+        return head if head.endswith("\n\n") else head.rstrip() + "\n\n"
+    lines = head.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[0].startswith("#"):
+        lines[1:1] = ["", "Part of [[Chatbox]]"]
+    else:
+        lines[0:0] = ["Part of [[Chatbox]]", ""]
+    return "\n".join(lines).rstrip() + "\n\n"
 
 
 def detect_vaults():
@@ -98,9 +114,15 @@ class Vault:
             head = head.rstrip() + "\n\n"
         except OSError:
             head = MEMORY_HEADER
+        head = _with_root_link(head)
         with open(full + ".tmp", "w", encoding="utf-8") as f:
             f.write(head + "".join("- " + m["text"] + "\n" for m in items))
         os.replace(full + ".tmp", full)
+        try:
+            import sync as syncmod
+            syncmod.update_root_note(os.path.dirname(full))
+        except OSError:
+            pass
 
     # ---- search ----------------------------------------------------------
     def _notes(self):
@@ -159,11 +181,19 @@ class Vault:
         rel = f"{CHATS_DIR}/{now:%Y-%m-%d %H%M} {title}.md"
         full = self._abs(rel)
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        lines = [f"# {title}", "", f"Saved from Chatbox on {now:%Y-%m-%d %H:%M}"
+        lines = ["---", 'up: "[[Chatbox]]"', "---", "",
+                 "Part of [[Chatbox]]", "",
+                 f"# {title}", "",
+                 f"Saved from Chatbox on {now:%Y-%m-%d %H:%M}"
                  + (f" · {backend}" if backend else ""), ""]
         for m in messages:
             who = m.get("who") or ("You" if m.get("role") == "you" else "Assistant")
             lines += [f"**{who}:**", "", m.get("text", "").strip(), ""]
         with open(full, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
+        try:
+            import sync as syncmod
+            syncmod.update_root_note(os.path.dirname(os.path.dirname(full)))
+        except OSError:
+            pass
         return rel

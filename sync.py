@@ -1,8 +1,9 @@
 """Sync chats and memories through a folder in the user's Obsidian vault.
 
 Off unless Settings has sync enabled and a vault is connected. Markdown in that
-folder is the copy both computers share. Sign-in tokens and attachment bytes
-stay in the local data directory.
+folder is the copy both computers share. Chat notes are named with the date and
+title, and Chatbox.md links them together for the graph. Sign-in tokens and
+attachment bytes stay in the local data directory.
 """
 import copy
 import hashlib
@@ -31,9 +32,27 @@ HEADINGS = {
     "Assistant": ("bot", None),
 }
 NAMES = {v: k for k, (_, v) in HEADINGS.items() if v}
-RESUME = re.compile(r"<!--chatbox-resume\n(.*?)\n-->\s*\Z", re.DOTALL)
-META_LINE = re.compile(r"^<!--chatbox (\{.*\})-->\n?", re.DOTALL)
+RESUME = re.compile(
+    r"(?:<!--chatbox-resume\n(.*?)\n-->|%%\s*chatbox-resume\n(.*?)\n%%)\s*\Z",
+    re.DOTALL,
+)
+HEADING = re.compile(
+    r"(?m)^#{2,3} (You|Cursor|Claude|Codex|ChatGPT|Ollama|Note|Plan|Assistant)"
+    r"(?: · ([^\n]+))?[ \t]*\n"
+)
+LEGACY_NAME = re.compile(r"^[a-f0-9]{12}\.md$")
+LOCAL_STAMP = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2})(\.\d+)?)?$"
+)
+UNSAFE_TITLE = re.compile(r'[\\/:*?"<>|#^\[\]]+')
 SKIP_SUFFIX = (".tmp", ".temp", ".crdownload", ".download", ".partial", ".icloud")
+ROOT_NOTE = "Chatbox.md"
+ROOT_LINK = "[[Chatbox]]"
+PART_OF = "Part of [[Chatbox]]"
+INDEX_BEGIN = "%% chatbox:index %%"
+INDEX_END = "%% /chatbox:index %%"
+_INDEX_BEGIN = re.compile(r"(?:<!--\s*chatbox:index\s*-->|%%\s*chatbox:index\s*%%)")
+_INDEX_END = re.compile(r"(?:<!--\s*/chatbox:index\s*-->|%%\s*/chatbox:index\s*%%)")
 
 
 def machine_name():
@@ -152,21 +171,122 @@ def _quote(value):
     return json.dumps(value, ensure_ascii=False)
 
 
-def _heading(item):
+def _parse_local_datetime(text):
+    """Seconds since the epoch for a local 'YYYY-MM-DD HH:MM' string, or None."""
+    matched = LOCAL_STAMP.match(str(text or "").strip())
+    if not matched:
+        return None
+    day, hm, sec, frac = matched.groups()
+    try:
+        parsed = time.strptime(f"{day} {hm}:{sec or '00'}", "%Y-%m-%d %H:%M:%S")
+        seconds = time.mktime(parsed)
+    except (OverflowError, ValueError):
+        return None
+    if frac:
+        seconds += float(frac)
+    return seconds
+
+
+def _as_seconds(value):
+    """Unix seconds from ms epoch, seconds epoch, or a local datetime string."""
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) >= 2 and text[0] == text[-1] == '"':
+            text = text[1:-1]
+        parsed = _parse_local_datetime(text)
+        if parsed is not None:
+            return parsed
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    # Date.now() is milliseconds (~1e12). time.time() is seconds (~1e9).
+    if value >= 1e11:
+        return float(value) / 1000.0
+    return float(value)
+
+
+def _format_stamp(value):
+    """Local time, e.g. 2026-11-13 15:23:41. Missing values stay the epoch."""
+    seconds = _as_seconds(value)
+    if seconds is None:
+        seconds = 0
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(seconds))
+
+
+def _parse_front_stamp(raw, milliseconds):
+    """Keep an old numeric frontmatter value. Parse a datetime into ms or seconds."""
+    text = str(raw or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        text = text[1:-1]
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    seconds = _parse_local_datetime(text)
+    if seconds is None:
+        return None
+    return seconds * 1000.0 if milliseconds else seconds
+
+
+def _safe_title(title, limit=60):
+    text = UNSAFE_TITLE.sub(" ", str(title or ""))
+    text = re.sub(r"[\x00-\x1f]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    if len(text) > limit:
+        text = text[:limit].rstrip(" .")
+    return text or "Chat"
+
+
+def _day_prefix(chat):
+    seconds = _as_seconds(chat.get("created"))
+    if seconds is None:
+        seconds = _as_seconds(chat.get("updated"))
+    if seconds is None:
+        seconds = time.time()
+    return time.strftime("%Y-%m-%d", time.localtime(seconds))
+
+
+def chat_filename(chat, suffix=""):
+    """'<YYYY-MM-DD> <title>.md', with a short suffix only when the caller asks."""
+    extra = f" ({suffix})" if suffix else ""
+    return f"{_day_prefix(chat)} {_safe_title(chat.get('title'))}{extra}.md"
+
+
+def _heading_name(item):
+    """Display name, and a model suffix for assistant turns."""
     role = item.get("r")
     if role == "you":
-        return "You"
+        return "You", None
     if role == "note":
-        return "Note"
+        return "Note", None
     if role == "plan":
-        return "Plan"
-    return NAMES.get(item.get("b"), "Assistant")
+        return "Plan", None
+    base = NAMES.get(item.get("b"), "Assistant")
+    model = item.get("model")
+    if isinstance(model, str):
+        model = re.sub(r"\s+", " ", model).strip(" ·")
+        if model and model.lower() != base.lower():
+            return base, model[:80]
+    return base, None
+
+
+def _line_needs_escape(line):
+    return (line.startswith("## ") or line.startswith("### ")
+            or line.startswith("\\## ") or line.startswith("\\### ")
+            or line.startswith("<!--chatbox") or line.startswith("\\<!--chatbox")
+            or line.startswith("%% chatbox") or line.startswith("%%chatbox")
+            or line.startswith("\\%% chatbox") or line.startswith("\\%%chatbox"))
 
 
 def _escape_body(text):
     lines = []
     for line in str(text or "").split("\n"):
-        if line.startswith("## ") or line.startswith("\\## ") or line.startswith("<!--chatbox"):
+        if _line_needs_escape(line):
             lines.append("\\" + line)
         else:
             lines.append(line)
@@ -176,23 +296,42 @@ def _escape_body(text):
 def _unescape_body(text):
     lines = []
     for line in text.split("\n"):
-        if line.startswith("\\## ") or line.startswith("\\<!--chatbox"):
+        if (line.startswith("\\## ") or line.startswith("\\### ")
+                or line.startswith("\\<!--chatbox")
+                or line.startswith("\\%% chatbox") or line.startswith("\\%%chatbox")):
             lines.append(line[1:])
         else:
             lines.append(line)
     return "\n".join(lines)
 
 
+def _take_meta(section):
+    """Hidden per-message metadata, in the current %% form or the old HTML comment."""
+    for pattern in (r"^<!--chatbox (\{.*\})-->\n?", r"^%%\s*chatbox (\{.*\})\s*%%\n?"):
+        matched = re.match(pattern, section)
+        if not matched:
+            continue
+        try:
+            extra = json.loads(matched.group(1))
+        except ValueError:
+            continue
+        if isinstance(extra, dict):
+            return extra, section[matched.end():]
+    return {}, section
+
+
 def render_chat(chat):
-    """Markdown note. Readable sections, plus a resume comment for session ids."""
+    """Markdown note a person can read. Session ids stay in a hidden resume block."""
     chat = _scrub(copy.deepcopy(chat))
     lines = ["---",
              "id: " + _quote(chat.get("id") or ""),
              "title: " + _quote(chat.get("title") or "Chat"),
              "backend: " + _quote(chat.get("backend") or ""),
-             "created: " + _quote(chat.get("created") or 0),
-             "updated: " + _quote(chat.get("updated") or 0),
-             "---", ""]
+             "created: " + _format_stamp(chat.get("created")),
+             "updated: " + _format_stamp(chat.get("updated")),
+             "up: " + _quote(ROOT_LINK),
+             "---", "",
+             PART_OF, ""]
     title = chat.get("title") or "Chat"
     lines.append("# " + title)
     lines.append("")
@@ -200,19 +339,20 @@ def render_chat(chat):
         if not isinstance(item, dict) or item.get("temp"):
             continue
         _scrub_files(item)
-        lines.append("## " + _heading(item))
+        base, model = _heading_name(item)
+        lines.append("### " + (f"{base} · {model}" if model else base))
         lines.append("")
         meta = {}
         for key in ("r", "b", "mode", "model", "u", "group", "path", "memId", "files"):
             if item.get(key) not in (None, "", [], {}):
                 meta[key] = item[key]
-        default_role, default_b = HEADINGS.get(_heading(item), ("bot", None))
+        default_role, default_b = HEADINGS.get(base, ("bot", None))
         if meta.get("r") == default_role:
             meta.pop("r", None)
         if meta.get("b") == default_b:
             meta.pop("b", None)
         if meta:
-            lines.append("<!--chatbox " + json.dumps(meta, ensure_ascii=False) + "-->")
+            lines.append("%% chatbox " + json.dumps(meta, ensure_ascii=False) + " %%")
             lines.append("")
         body = item.get("t")
         if body is None and item.get("r") == "plan":
@@ -226,13 +366,16 @@ def render_chat(chat):
             resume[key] = value
     text = "\n".join(lines).rstrip() + "\n"
     if resume:
-        text += "\n<!--chatbox-resume\n" + json.dumps(resume, ensure_ascii=False) + "\n-->\n"
+        text += "\n%% chatbox-resume\n" + json.dumps(resume, ensure_ascii=False) + "\n%%\n"
     return text
 
 
 def parse_chat(text):
     """The chat dict, or None if this isn't a finished Chatbox note."""
-    if not text or not text.startswith("---\n"):
+    if not text:
+        return None
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not text.startswith("---\n"):
         return None
     end = text.find("\n---\n", 4)
     if end < 0:
@@ -244,11 +387,10 @@ def parse_chat(text):
         key, raw = line.split(":", 1)
         key, raw = key.strip(), raw.strip()
         if key in ("created", "updated"):
-            try:
-                meta[key] = float(raw)
+            parsed = _parse_front_stamp(raw, milliseconds=(key == "created"))
+            if parsed is not None:
+                meta[key] = parsed
                 continue
-            except ValueError:
-                pass
         try:
             meta[key] = json.loads(raw)
         except ValueError:
@@ -259,27 +401,18 @@ def parse_chat(text):
     resume = {}
     found = RESUME.search(body)
     if found:
+        raw = found.group(1) if found.group(1) is not None else found.group(2)
         try:
-            resume = json.loads(found.group(1))
+            resume = json.loads(raw)
         except ValueError:
             resume = {}
         body = body[:found.start()]
     items = []
-    parts = re.split(r"(?m)^## (You|Cursor|Claude|Codex|ChatGPT|Ollama|Note|Plan|Assistant)\n", body)
-    # parts[0] is the title block, then pairs of heading, section
-    pair = parts[1:]
-    for index in range(0, len(pair) - 1, 2):
-        heading, section = pair[index], pair[index + 1]
+    # Anything before the first message heading is the title and the root link.
+    for heading, heading_model, section in _sections(body):
         role, backend = HEADINGS.get(heading, ("bot", None))
         section = section.lstrip("\n")
-        extra = {}
-        matched = META_LINE.match(section)
-        if matched:
-            try:
-                extra = json.loads(matched.group(1))
-            except ValueError:
-                extra = {}
-            section = section[matched.end():]
+        extra, section = _take_meta(section)
         text_body = _unescape_body(section).strip()
         item = {"r": extra.get("r") or role, "t": text_body}
         if extra.get("b") or backend:
@@ -287,6 +420,8 @@ def parse_chat(text):
         for key in ("mode", "model", "u", "group", "path", "memId", "files"):
             if key in extra:
                 item[key] = extra[key]
+        if "model" not in item and heading_model:
+            item["model"] = heading_model.strip()
         if item["r"] == "plan" and not item.get("path"):
             item["path"] = text_body
         items.append(item)
@@ -301,8 +436,18 @@ def parse_chat(text):
     return chat
 
 
+def _sections(body):
+    matches = list(HEADING.finditer(body))
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        model = match.group(2) or ""
+        yield match.group(1), model.strip(), body[start:end]
+
+
 def render_memories(items):
     lines = ["# Chatbox Memories", "",
+             PART_OF, "",
              "Memories shared with every assistant. Each bullet is one memory. "
              "You can edit the words; leave the id at the start alone.", ""]
     for item in items:
@@ -442,9 +587,11 @@ class Library:
                 continue
             if stat.st_size == 0:
                 continue
+            legacy = bool(LEGACY_NAME.match(os.path.basename(path)))
             known = next((row for row in self.by_id.values() if row.get("path") == path), None)
-            if known and known.get("mtime_ns") == stat.st_mtime_ns and known.get("size") == stat.st_size:
+            if known and not legacy and known.get("mtime_ns") == stat.st_mtime_ns and known.get("size") == stat.st_size:
                 chat = known["chat"]
+                row_hash = known.get("hash")
             else:
                 try:
                     with open(path, encoding="utf-8") as handle:
@@ -454,14 +601,21 @@ class Library:
                 chat = parse_chat(text)
                 if not chat:
                     continue
-                known = {"path": path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
-                         "hash": _hash(text), "chat": chat}
+                row_hash = _hash(text)
+                if legacy:
+                    try:
+                        path, stat, text = self._migrate_legacy(path, chat)
+                        row_hash = _hash(text)
+                    except OSError:
+                        pass
             cid = chat["id"]
             seen.add(cid)
-            self.by_id[cid] = known
+            self.by_id[cid] = {"path": path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
+                               "hash": row_hash, "chat": chat}
         for cid in list(self.by_id):
             if cid not in seen:
                 self.by_id.pop(cid, None)
+        _update_root_note(self.root)
 
     def list_chats(self):
         with self.lock:
@@ -535,24 +689,67 @@ class Library:
                 return
             self.by_id.pop(cid, None)
             self.base.pop(cid, None)
+            _update_root_note(self.root)
+
+    def _available(self, path, cid, current):
+        if current and os.path.abspath(current) == os.path.abspath(path):
+            return True
+        if os.path.exists(path):
+            return False
+        for other, row in self.by_id.items():
+            if other != cid and row.get("path") and os.path.abspath(row["path"]) == os.path.abspath(path):
+                return False
+        return True
+
+    def _dest_path(self, chat, current=None):
+        """Date-and-title filename. A short id suffix is added only when that name is taken."""
+        folder = self._chats()
+        os.makedirs(folder, exist_ok=True)
+        cid = chat["id"]
+        for suffix in ("", cid[:6], cid):
+            path = os.path.join(folder, chat_filename(chat, suffix))
+            if self._available(path, cid, current):
+                return path
+        return os.path.join(folder, chat_filename(chat, cid))
+
+    def _migrate_legacy(self, path, chat):
+        """Rewrite an id-named note in place, then rename it. Rename does not leave a copy."""
+        dest = self._dest_path(chat, current=path)
+        text = render_chat(chat)
+        inside(self.root, path)
+        if os.path.abspath(dest) != os.path.abspath(path):
+            inside(self.root, dest)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            _atomic_write(path, text)
+            os.replace(path, dest)
+        else:
+            _atomic_write(dest, text)
+        return dest, os.stat(dest), text
 
     def _write_new(self, chat):
-        path = os.path.join(self._chats(), chat["id"] + ".md")
-        self._write_path(path, chat)
+        self._write_path(None, chat)
 
     def _write_path(self, path, chat):
-        inside(self.root, path)
+        current = path if path and os.path.isfile(path) else None
+        dest = self._dest_path(chat, current=current)
+        if current and os.path.abspath(current) != os.path.abspath(dest):
+            inside(self.root, current)
+            inside(self.root, dest)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            os.replace(current, dest)
+        inside(self.root, dest)
         text = render_chat(chat)
-        _atomic_write(path, text)
-        stat = os.stat(path)
-        self.by_id[chat["id"]] = {"path": path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
+        _atomic_write(dest, text)
+        stat = os.stat(dest)
+        self.by_id[chat["id"]] = {"path": dest, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
                                   "hash": _hash(text), "chat": copy.deepcopy(chat)}
         self.base[chat["id"]] = copy.deepcopy(chat.get("items") or [])
+        _update_root_note(self.root)
 
     def _write_conflict(self, chat):
         text = render_chat(chat)
         digest = _hash(text)[:8]
-        title = re.sub(r"[\\/:*?\"<>|\n\r\t]+", " ", chat.get("title") or "Chat").strip()[:60] or "Chat"
+        title = _safe_title(chat.get("title"))
         name = f"{title} (conflict {machine_name()}).md"
         path = os.path.join(self._chats(), name)
         previous = self.conflict_hash.get(chat["id"])
@@ -581,6 +778,7 @@ class Library:
         self.by_id[conflict["id"]] = {"path": path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
                                       "hash": _hash(text), "chat": conflict}
         self.base[conflict["id"]] = copy.deepcopy(conflict.get("items") or [])
+        _update_root_note(self.root)
 
 
 def _workdirs_conflict(left, right):
@@ -620,6 +818,114 @@ def library(root):
             lib = Library(root)
             _libraries[root] = lib
         return lib
+
+
+def _note_updated(path):
+    """Sort key for the index: frontmatter updated, or the file's mtime."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            chunk = handle.read(4096)
+    except OSError:
+        chunk = ""
+    if chunk.startswith("---"):
+        end = chunk.find("\n---", 3)
+        block = chunk[:end] if end > 0 else ""
+        for line in block.splitlines():
+            if line.startswith("updated:"):
+                seconds = _as_seconds(line.split(":", 1)[1])
+                if seconds:
+                    return seconds
+                break
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0
+
+
+def _index_block(root):
+    lines = ["- [[Memories]]"]
+    folder = os.path.join(root, "Chats")
+    entries = []
+    if os.path.isdir(folder):
+        for name in os.listdir(folder):
+            if _skip_name(name) or not name.endswith(".md"):
+                continue
+            path = os.path.join(folder, name)
+            try:
+                if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                    continue
+            except OSError:
+                continue
+            stem = name[:-3].replace("]", "").replace("|", "").strip()
+            if stem:
+                entries.append((_note_updated(path), stem))
+    entries.sort(key=lambda item: (-item[0], item[1].lower()))
+    lines.extend(f"- [[{stem}]]" for _, stem in entries)
+    return INDEX_BEGIN + "\n" + "\n".join(lines) + "\n" + INDEX_END + "\n"
+
+
+def _splice_index(text, block):
+    """Put the index between its markers. Text outside the markers stays put."""
+    begin = _INDEX_BEGIN.search(text)
+    if begin:
+        end = _INDEX_END.search(text, begin.end())
+        if end:
+            tail = end.end()
+            if text[tail:tail + 2] == "\r\n":
+                tail += 2
+            elif text[tail:tail + 1] in ("\n", "\r"):
+                tail += 1
+            return text[:begin.start()] + block + text[tail:]
+        line_start = text.rfind("\n", 0, begin.start()) + 1
+        line_end = text.find("\n", begin.end())
+        line_end = len(text) if line_end < 0 else line_end + 1
+        text = text[:line_start] + text[line_end:]
+    if text.strip():
+        if text.endswith("\n\n"):
+            return text + block
+        if text.endswith("\n"):
+            return text + "\n" + block
+        return text + "\n\n" + block
+    return "# Chatbox\n\n" + block
+
+
+def _update_root_note(root):
+    """Maintain <root>/Chatbox.md. Does nothing when Chatbox has not written a note yet."""
+    try:
+        note = os.path.join(root, ROOT_NOTE)
+        chats = os.path.join(root, "Chats")
+        memories = os.path.join(root, "Memories.md")
+        exists = os.path.isfile(note)
+        has_chats = False
+        if os.path.isdir(chats):
+            for name in os.listdir(chats):
+                if _skip_name(name) or not name.endswith(".md"):
+                    continue
+                path = os.path.join(chats, name)
+                if os.path.isfile(path) and os.path.getsize(path) > 0:
+                    has_chats = True
+                    break
+        if not exists and not has_chats and not os.path.isfile(memories):
+            return
+        block = _index_block(root)
+        current = ""
+        if exists:
+            with open(note, encoding="utf-8") as handle:
+                current = handle.read()
+        updated = _splice_index(current, block)
+        if updated != current:
+            _atomic_write(note, updated)
+    except OSError:
+        return
+
+
+def update_root_note(root):
+    """Refresh the graph index. Takes the library lock; sync itself calls _update_root_note."""
+    if not root:
+        return
+    root = os.path.abspath(root)
+    with library(root).lock:
+        _update_root_note(root)
 
 
 def list_chats(root):
@@ -676,6 +982,7 @@ def write_memories(root, items):
         rendered = render_memories(items)
         _atomic_write(path, rendered)
         lib.memory_hash = _hash(rendered)
+        _update_root_note(root)
 
 
 def move_existing(data_dir, root):
