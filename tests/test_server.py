@@ -2,6 +2,7 @@
 import json
 import os
 import stat
+import sys
 import textwrap
 import time
 import unittest
@@ -13,10 +14,33 @@ from tests.support import isolate, request, serve
 
 
 def write_cli(folder, name, body):
-    path = Path(folder) / name
-    path.write_text(textwrap.dedent(body))
+    folder = Path(folder)
+    script = textwrap.dedent(body)
+    if os.name == "nt":
+        py = folder / (name + ".py")
+        py.write_text(script, encoding="utf-8")
+        cmd = folder / (name + ".cmd")
+        cmd.write_text(f'@"{sys.executable}" "{py}" %*\r\n', encoding="utf-8")
+        return str(cmd)
+    path = folder / name
+    path.write_text(script, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return str(path)
+
+
+def process_alive(pid):
+    if os.name == "nt":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 class ServerTests(unittest.TestCase):
@@ -114,7 +138,7 @@ class ServerTests(unittest.TestCase):
         else:
             self.fail("fake CLI did not start")
         pid = int(open(pidfile).read())
-        os.kill(pid, 0)
+        self.assertTrue(process_alive(pid))
         code, raw = request(self.srv, "/api/cancel", {"turn_id": "ab" * 8})
         self.assertEqual(code, 200)
         self.assertIn(b"true", raw.lower())
@@ -122,8 +146,7 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(any(e.get("stopped") for e in box["evs"]))
         self.assertIn("Partial", "".join(e.get("text", "") for e in box["evs"]))
         time.sleep(0.2)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(pid, 0)
+        self.assertFalse(process_alive(pid))
         os.environ["FAKE_MODE"] = ""
 
     def test_start_timeout(self):

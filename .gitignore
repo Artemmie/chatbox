@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+build/
+dist/
+version.txt
+*.spec
 
 # Local app data (if run from the repo folder)
 profile/

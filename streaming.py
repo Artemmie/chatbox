@@ -96,29 +96,8 @@ def any_active():
 
 
 def _kill_proc(proc):
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.terminate()
-        except OSError:
-            return
-    try:
-        proc.wait(timeout=2)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except OSError:
-            return
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        pass
+    import runtime
+    runtime.kill_tree(proc)
 
 
 def read_stdout(cmd, cwd, turn, total=None, start_timeout=None, idle_timeout=None):
@@ -126,9 +105,10 @@ def read_stdout(cmd, cwd, turn, total=None, start_timeout=None, idle_timeout=Non
     total = TOTAL_TIMEOUT if total is None else total
     start_timeout = START_TIMEOUT if start_timeout is None else start_timeout
     idle_timeout = IDLE_TIMEOUT if idle_timeout is None else idle_timeout
-    proc = subprocess.Popen(
+    import runtime
+    proc = runtime.spawn(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL, start_new_session=True)
+        stdin=subprocess.DEVNULL)
     turn.proc = proc
     err_box = []
 

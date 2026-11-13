@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CHATBOX_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+      AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+      AZURE_TRUSTED_SIGNING_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libnss3 libxkbcommon0 libxcomposite1 \
+            libxdamage1 libxrandr2 libasound2 libgbm1 libgtk-3-0 libxshmfence1 libxss1 \
+            libx11-xcb1 libxcb-cursor0 file wget
+          wget -q -O appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+
+      - name: Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup --no-progress -y
+        shell: pwsh
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip pyinstaller PyQt6 PyQt6-WebEngine
+
+      - name: PyInstaller
+        run: python packaging/build.py pyinstaller
+
+      - name: Sign macOS app
+        if: runner.os == 'macOS'
+        run: bash packaging/sign-macos.sh app
+
+      - name: Sign Windows binaries with Azure Trusted Signing
+        if: runner.os == 'Windows' && env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_CLIENT_SECRET != '' && env.AZURE_TRUSTED_SIGNING_ENDPOINT != '' && env.AZURE_TRUSTED_SIGNING_ACCOUNT != '' && env.AZURE_TRUSTED_SIGNING_PROFILE != ''
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}/dist/Chatbox
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign Windows binaries with a PFX
+        if: runner.os == 'Windows' && env.AZURE_CLIENT_ID == '' && env.WINDOWS_CERT_PFX_BASE64 != ''
+        shell: pwsh
+        run: powershell -File packaging/sign-windows.ps1 dist/Chatbox
+
+      - name: Note unsigned Windows build
+        if: runner.os == 'Windows' && env.AZURE_CLIENT_ID == '' && env.WINDOWS_CERT_PFX_BASE64 == ''
+        shell: pwsh
+        run: Write-Host "No Windows signing secrets. Building unsigned."
+
+      - name: Package
+        run: python packaging/build.py package
+
+      - name: Sign macOS disk image
+        if: runner.os == 'macOS'
+        run: bash packaging/sign-macos.sh dmg
+
+      - name: Sign the Windows installer
+        if: runner.os == 'Windows' && env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_CLIENT_SECRET != '' && env.AZURE_TRUSTED_SIGNING_ENDPOINT != '' && env.AZURE_TRUSTED_SIGNING_ACCOUNT != '' && env.AZURE_TRUSTED_SIGNING_PROFILE != ''
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}/dist/artifacts
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign the Windows installer with a PFX
+        if: runner.os == 'Windows' && env.AZURE_CLIENT_ID == '' && env.WINDOWS_CERT_PFX_BASE64 != ''
+        shell: pwsh
+        run: powershell -File packaging/sign-windows.ps1 dist/artifacts
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            bash packaging/smoke.sh dist/Chatbox/Chatbox
+            bash packaging/smoke.sh dist/artifacts/Chatbox-Linux-x86_64.AppImage --appimage-extract-and-run
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            bash packaging/smoke.sh dist/Chatbox.app/Contents/MacOS/Chatbox
+          else
+            bash packaging/smoke.sh dist/Chatbox/Chatbox.exe
+          fi
+          ls -lh dist/artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatbox-${{ runner.os }}
+          path: dist/artifacts/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum -- * > SHA256SUMS
+          ls -lh
+          gh release create "${GITHUB_REF_NAME}" ./* \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Downloads for Linux, macOS and Windows. Checksums are in SHA256SUMS. See SIGNING.md for Gatekeeper and SmartScreen when the build is unsigned."

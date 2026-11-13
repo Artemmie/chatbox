@@ -168,9 +168,10 @@ def _write_private(path, text):
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
-    os.chmod(tmp, 0o600)
+    import runtime
+    runtime.restrict_private(tmp)
     os.replace(tmp, path)
-    os.chmod(path, 0o600)
+    runtime.restrict_private(path)
 
 
 class AccountStore:

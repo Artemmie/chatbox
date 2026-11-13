@@ -7,14 +7,21 @@ to paste the code the browser shows.
 """
 import json
 import os
-import pty
 import re
-import select
 import signal
 import subprocess
 import sys
 import threading
 import time
+
+import runtime
+
+try:
+    import pty
+    import select
+except ImportError:  # Windows has no pseudo-terminal module
+    pty = None
+    select = None
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\r")
 URL = re.compile(r"https://[^\s'\"<>]+")
@@ -52,6 +59,13 @@ class Job:
         self.user_code, self.open_url = None, open_url  # device-code sign-in (Codex)
         self.started = time.time()
         self._on_done = on_done
+        self.proc = None
+        if pty is None:
+            self._start_pipe(argv)
+        else:
+            self._start_pty(argv)
+
+    def _start_pty(self, argv):
         self.pid, self.fd = pty.fork()
         if self.pid == 0:  # child
             os.environ["PATH"] = os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")
@@ -62,6 +76,19 @@ class Job:
             finally:
                 os._exit(127)
         threading.Thread(target=self._read, daemon=True).start()
+
+    def _start_pipe(self, argv):
+        """Windows: the tool's own console program, with its output read from a pipe."""
+        env = os.environ.copy()
+        extra = os.pathsep.join(runtime.windows_tool_dirs())
+        if extra:
+            env["PATH"] = extra + os.pathsep + env.get("PATH", "")
+        self.proc = runtime.spawn(
+            argv, cwd=os.path.expanduser("~"), env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.pid = self.proc.pid
+        self.fd = None
+        threading.Thread(target=self._read_pipe, daemon=True).start()
 
     def _read(self):
         while True:
@@ -104,7 +131,64 @@ class Job:
             self.state = "done" if self.code == 0 else "failed"
         self._on_done(self)
 
+    def _read_pipe(self):
+        import queue
+        chunks = queue.Queue()
+
+        def pump():
+            try:
+                while True:
+                    chunk = self.proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    chunks.put(chunk)
+            except OSError:
+                pass
+            chunks.put(None)
+
+        threading.Thread(target=pump, daemon=True).start()
+        while True:
+            if time.time() - self.started > JOB_LIMIT:
+                self.cancel()
+            try:
+                chunk = chunks.get(timeout=1)
+            except queue.Empty:
+                if self.proc.poll() is not None:
+                    break
+                continue
+            if chunk is None:
+                break
+            self._take_output(chunk)
+        self._exited(wait=True)
+        if self.state == "running":
+            self.state = "done" if self.code == 0 else "failed"
+        self._on_done(self)
+
+    def _take_output(self, chunk):
+        self.output = (self.output + ANSI.sub("", chunk.decode(errors="replace")))[-20000:]
+        if not self.url:
+            m = URL.search(self.output)
+            if m:
+                self.url = m.group(0).rstrip(".,)")
+                if self.open_url:
+                    try:
+                        open_url(self.url)
+                    except Exception:
+                        pass
+        if not self.user_code and "code" in self.output.lower():
+            m = DEVICE_CODE.search(self.output.split("code", 1)[-1])
+            if m:
+                self.user_code = m.group(0)
+
     def _exited(self, wait=False):
+        if self.proc is not None:
+            if self.code is not None:
+                return True
+            code = self.proc.wait() if wait else self.proc.poll()
+            if code is None:
+                return False
+            self.code = code
+            return True
         if self.code is not None:
             return True
         try:
@@ -118,10 +202,18 @@ class Job:
         return False
 
     def send(self, text):
-        os.write(self.fd, (text.strip() + "\r").encode())
+        data = (text.strip() + "\r").encode()
+        if self.proc is not None and self.proc.stdin:
+            self.proc.stdin.write(data)
+            self.proc.stdin.flush()
+            return
+        os.write(self.fd, data)
 
     def cancel(self):
         self.state = "cancelled"
+        if self.proc is not None:
+            runtime.kill_tree(self.proc)
+            return
         try:
             os.kill(self.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -226,6 +318,8 @@ class Accounts:
             raise ValueError("Already running — finish or cancel it first.")
         exe = self.find(SERVICES[sid]["exe"])
         if action == "install":
+            if os.name == "nt":
+                raise ValueError(runtime.windows_install_message(SERVICES[sid]["name"]))
             argv = ["bash", "-c", INSTALL[sid]]
         elif not exe:
             raise ValueError(f"{SERVICES[sid]['name']} is not installed yet.")
@@ -249,15 +343,23 @@ def _openers(target):
     """Commands that open a link or file with the default app, best first."""
     if sys.platform == "darwin":
         return [["open", target]]
+    if os.name == "nt":
+        return []
     # inside a distrobox, xdg-open may only work on the host
     return [["xdg-open", target], ["distrobox-host-exec", "xdg-open", target]]
 
 
 def _launch(target):
+    if os.name == "nt":
+        try:
+            os.startfile(target)  # noqa: the Windows-only opener
+            return True
+        except OSError:
+            return False
     for argv in _openers(target):
         try:
-            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             stdin=subprocess.DEVNULL, start_new_session=True)
+            runtime.spawn(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          stdin=subprocess.DEVNULL)
             return True
         except OSError:
             continue
