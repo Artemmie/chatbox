@@ -616,21 +616,30 @@ function renderSettings(p){
   const notes=p.notes||{};
   const mode=notes.mode||p.settings.notes_storage||'off';
   document.querySelectorAll('input[name="notes"]').forEach(el=>{el.checked=el.value===mode;});
+  document.querySelectorAll('.notecard').forEach(card=>{
+    const input=card.querySelector('input[name="notes"]');
+    card.classList.toggle('on', !!(input&&input.checked));
+  });
   $('#vaultopts').hidden=mode==='off';$('#vaulthint').hidden=mode!=='off';
-  const sync=p.sync||{};
   if(document.activeElement!==$('#sync_folder'))$('#sync_folder').value=p.settings.sync_folder||'Chatbox';
+  if(document.activeElement!==$('#vaultpickpath'))$('#vaultpickpath').value=p.settings.vault_path||'';
   if(p.vault)VAULT=p.vault; else if(mode!=='chatbox') VAULT=null;
-  const app=p.obsidian_app||{};
-  const missing=!notes.installed&&!app.installed;
-  $('#syncnotice').hidden=!missing;
-  if(missing){$('#syncnoticetext').textContent='Obsidian not found. ';$('#obsdownload').hidden=false;}
   $('#obsidianopts').hidden=mode!=='obsidian';
-  $('#noteslocalhint').hidden=mode!=='chatbox';
-  $('#noteslocalpath').hidden=mode!=='chatbox';
+  $('#chatboxopts').hidden=mode!=='chatbox';
+  $('#obsdownload').hidden=!!notes.installed;
   $('#noteslocalpath').textContent=notes.local_path||'';
+  const adv=$('#notesadvanced');
+  if(mode==='off') adv.hidden=true;
+  else{
+    adv.hidden=false;
+    const host=mode==='chatbox'?$('#chatboxopts'):$('#obsidianopts');
+    if(host&&adv.parentElement!==host) host.appendChild(adv);
+  }
   const banner=$('#notebanner'); if(banner) banner.hidden=!notes.banner;
   PROJECTS=p.projects||[];renderProject();
-  $('#syncstatus').textContent=sync.active?('Syncing in '+sync.path):(mode==='obsidian'?'Pick a vault folder to start saving notes.':'');
+  const status=$('#notesstatus');
+  status.textContent=notes.status||'';
+  status.className='notesstatus'+(notes.fallback?' warn':(mode==='off'?' muted':''));
   if(document.activeElement!==$('#instructions'))$('#instructions').value=p.settings.instructions||'';
   $('#auto_update').checked=p.settings.auto_update!==false;
   $('#auto_install_updates').checked=!!p.settings.auto_install_updates;
@@ -642,26 +651,64 @@ async function memAct(body){const r=await post(body.settings?'/api/settings':'/a
 function refreshMemCount(){fetch('/api/settings').then(r=>r.json()).then(p=>{$('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';if($('#set').open)renderSettings(p);});}
 $('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch('/api/settings').then(r=>r.json()));};
 for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','auto_update','auto_install_updates'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
+function showNotesError(text){
+  const el=$('#notesstatus');
+  el.textContent=text;
+  el.className='notesstatus err';
+  if($('#set').open) el.scrollIntoView({block:'nearest'});
+}
+async function saveTypedVault(path){
+  const cur=await fetch('/api/settings').then(r=>r.json()).catch(()=>({}));
+  const from=(cur.notes&&cur.notes.mode)||'';
+  let copy=false;
+  if(from==='chatbox') copy=confirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
+  const r=await post('/api/notes',{mode:'obsidian',path,copy});
+  if(r.error){showNotesError(r.error);return r;}
+  renderSettings(r);
+  if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});
+  if(r.vault)renderObsidian(r);
+  return r;
+}
 document.querySelectorAll('input[name="notes"]').forEach(el=>el.onchange=async()=>{
   if(!el.checked)return;
-  if(el.value==='obsidian'){renderSettings(await fetch('/api/settings').then(r=>r.json()));el.checked=true;$('#obsidianopts').hidden=false;$('#vaultpickpath').focus();return;}
+  if(el.value==='obsidian'){
+    const cur=await fetch('/api/settings').then(r=>r.json()).catch(()=>({}));
+    const from=(cur.notes&&cur.notes.mode)||'';
+    const path=(cur.settings&&cur.settings.vault_path)||'';
+    let copy=false;
+    if(from==='chatbox'&&path) copy=confirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
+    const r=await post('/api/notes',{mode:'obsidian',copy});
+    if(r.error) showNotesError(r.error);
+    else {renderSettings(r); if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});}
+    return;
+  }
   const r=await post('/api/notes',{mode:el.value});
-  if(r.error)alert(r.error);
-  renderSettings(r);
+  if(r.error) showNotesError(r.error);
+  else {renderSettings(r); if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});}
 });
 $('#syncform').onsubmit=async e=>{e.preventDefault();await memAct({settings:{sync_folder:$('#sync_folder').value}});};
 $('#set').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
 $('#vaultpick').onsubmit=async e=>{
   e.preventDefault();
   const v=$('#vaultpickpath').value.trim();
-  if(!v)return;
-  const cur=(await fetch('/api/settings').then(r=>r.json()).catch(()=>({})));
-  const from=(cur.notes&&cur.notes.mode)||'';
-  let copy=false;
-  if(from==='chatbox') copy=confirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
-  const r=await post('/api/notes',{mode:'obsidian',path:v,copy});
-  if(r.error)alert(r.error);
-  renderSettings(r);if(r.vault)renderObsidian(r);
+  if(!v){showNotesError('Type a folder path, or click Change… to pick one.');return;}
+  await saveTypedVault(v);
+};
+$('#choosevault').onclick=async()=>{
+  const btn=$('#choosevault');
+  btn.disabled=true; btn.textContent='Choosing…';
+  try{
+    const picked=await post('/api/pick-folder',{});
+    if(picked.cancelled) return;
+    if(picked.error){showNotesError(picked.error);return;}
+    if(!picked.path){showNotesError('No folder was chosen.');return;}
+    $('#vaultpickpath').value=picked.path;
+    await saveTypedVault(picked.path);
+  }catch(e){
+    showNotesError('Could not open the folder picker.');
+  }finally{
+    btn.disabled=false; btn.textContent='Change…';
+  }
 };
 $('#projectpick').onchange=()=>{
   let value=$('#projectpick').value;
@@ -673,13 +720,9 @@ $('#projectpick').onchange=()=>{
   CHAT.project=value;CHAT.project_lock=true;saveChat();renderProject();
 };
 $('#notebanner').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
-$('#syncmove').onclick=async()=>{
-  const r=await post('/api/sync',{action:'move'});
-  if(r.error)alert(r.error);
-  else alert('Copied '+r.copied+' chat'+(r.copied===1?'':'s')+' and '+r.memories+' '+(r.memories===1?'memory':'memories')+'. Originals are still on this computer.');
-  if(r.settings)renderSettings(r);
-  const list=await fetch('/api/chats').then(x=>x.json());
-  renderChatList(list);
+$('#opennotes').onclick=async()=>{
+  const r=await post('/api/notes',{action:'open'});
+  if(r.error) showNotesError(r.error);
 };
 $('#instsave').onclick=async()=>{await memAct({settings:{instructions:$('#instructions').value}});
   $('#instmsg').textContent='Saved — new chats will use it.';setTimeout(()=>$('#instmsg').textContent='',3000);};
