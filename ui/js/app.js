@@ -601,16 +601,36 @@ function showNotesError(text){
   el.className='notesstatus err';
   if($('#set').open) el.scrollIntoView({block:'nearest'});
 }
+function showVaultMsg(text, kind){
+  const msg=$('#vaultmsg');
+  if(!msg) return;
+  msg.textContent=text||'';
+  msg.className='vaultmsg'+(kind?(' '+kind):'');
+}
+let vaultSaveGen=0;
 async function saveTypedVault(path){
-  const cur=await fetch('/api/settings').then(r=>r.json()).catch(()=>({}));
-  const from=(cur.notes&&cur.notes.mode)||'';
-  let copy=false;
-  if(from==='chatbox') copy=await askConfirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
-  const r=await post('/api/notes',{mode:'obsidian',path,copy});
-  if(r.error){showNotesError(r.error);return r;}
-  renderSettings(r);
-  if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});
-  return r;
+  const btn=$('#vaultsave');
+  const gen=++vaultSaveGen;
+  if(btn){btn.disabled=true;btn.textContent='Saving…';}
+  showVaultMsg('');
+  try{
+    const cur=await fetch('/api/settings').then(r=>r.json()).catch(()=>({}));
+    const from=(cur.notes&&cur.notes.mode)||'';
+    let copy=false;
+    if(from==='chatbox') copy=await askConfirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
+    const r=await post('/api/notes',{mode:'obsidian',path,copy});
+    if(r.error){showVaultMsg(r.error,'err');return r;}
+    renderSettings(r);
+    showVaultMsg(r.notice||('Saved: notes go to '+(r.vault_name||'this vault')),'ok');
+    if(btn) btn.textContent='Saved';
+    setTimeout(()=>{if(gen===vaultSaveGen&&btn&&btn.textContent==='Saved') btn.textContent='Save';},1600);
+    return r;
+  }catch(e){
+    showVaultMsg('Could not save the vault.','err');
+    return {error:String(e)};
+  }finally{
+    if(btn){btn.disabled=false;if(btn.textContent==='Saving…') btn.textContent='Save';}
+  }
 }
 document.querySelectorAll('input[name="notes"]').forEach(el=>el.onchange=async()=>{
   if(!el.checked)return;
@@ -634,7 +654,7 @@ $('#set').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');
 $('#vaultpick').onsubmit=async e=>{
   e.preventDefault();
   const v=$('#vaultpickpath').value.trim();
-  if(!v){showNotesError('Type a folder path, or click Change… to pick one.');return;}
+  if(!v){showVaultMsg('Type a folder path, or click Change… to pick one.','err');return;}
   await saveTypedVault(v);
 };
 $('#choosevault').onclick=async()=>{
@@ -643,8 +663,8 @@ $('#choosevault').onclick=async()=>{
   try{
     const picked=await post('/api/pick-folder',{});
     if(picked.cancelled) return;
-    if(picked.error){showNotesError(picked.error);return;}
-    if(!picked.path){showNotesError('No folder was chosen.');return;}
+    if(picked.error){showVaultMsg(picked.error,'err');return;}
+    if(!picked.path){showVaultMsg('No folder was chosen.','err');return;}
     $('#vaultpickpath').value=picked.path;
     await saveTypedVault(picked.path);
   }catch(e){

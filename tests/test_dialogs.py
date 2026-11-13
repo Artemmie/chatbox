@@ -59,6 +59,18 @@ class DialogUiTests(unittest.TestCase):
         self.assertNotIn("Obsidian Connected", js)
         self.assertIn('id="savebtn"', html)
         self.assertIn("id:CHAT.id", js)
+        self.assertIn('id="vaultmsg"', html)
+        self.assertIn('aria-live="polite"', html)
+        start = js.index("async function saveTypedVault")
+        body = js[start:js.index("document.querySelectorAll('input[name=\"notes\"]')", start)]
+        self.assertIn("askConfirm(", body)
+        self.assertNotRegex(body, r"(?<![\w$])confirm\s*\(")
+        self.assertIn("Saving…", body)
+        self.assertIn("btn.textContent='Saved'", body)
+        self.assertIn("showVaultMsg(r.notice", body)
+        self.assertIn("Already using this vault", _read("memory.py"))
+        self.assertIn("Saved: notes go to ", _read("memory.py"))
+        self.assertIn("That path isn't a folder.", _read("memory.py"))
 
     def test_obsidian_link_quotes_the_folder(self):
         folder = tempfile.mkdtemp()

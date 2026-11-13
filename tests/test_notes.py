@@ -362,6 +362,37 @@ class PickFolderTests(unittest.TestCase):
         self.assertIn("doesn't exist", body["error"])
         self.assertEqual(body["settings"]["vault_path"], os.path.abspath(saved))
 
+    def test_saving_the_same_vault_reports_it_and_a_file_is_rejected(self):
+        saved = os.path.join(self.tmp, "Main vault")
+        os.makedirs(saved)
+        self.box.MEMORY.set_notes_storage("obsidian", saved)
+        code, raw = request(self.srv, "/api/notes", {"mode": "obsidian", "path": saved + os.sep})
+        self.assertEqual(code, 200)
+        body = json.loads(raw)
+        self.assertTrue(body["unchanged"])
+        self.assertEqual(body["notice"], "Already using this vault")
+        self.assertEqual(body["vault_name"], "Main vault")
+        self.assertEqual(body["settings"]["vault_path"], os.path.abspath(saved))
+        other = os.path.join(self.tmp, "Other vault")
+        os.makedirs(other)
+        code, raw = request(self.srv, "/api/notes", {"mode": "obsidian", "path": other})
+        body = json.loads(raw)
+        self.assertFalse(body["unchanged"])
+        self.assertEqual(body["notice"], "Saved: notes go to Other vault")
+        self.assertEqual(body["settings"]["vault_path"], os.path.abspath(other))
+        note = os.path.join(self.tmp, "not-a-folder.md")
+        with open(note, "w", encoding="utf-8") as handle:
+            handle.write("# no\n")
+        code, raw = request(self.srv, "/api/notes", {"mode": "obsidian", "path": note})
+        body = json.loads(raw)
+        self.assertIn("isn't a folder", body["error"])
+        self.assertEqual(body["settings"]["vault_path"], os.path.abspath(other))
+        missing = os.path.join(self.tmp, "gone")
+        code, raw = request(self.srv, "/api/notes", {"mode": "obsidian", "path": missing})
+        body = json.loads(raw)
+        self.assertIn("doesn't exist", body["error"])
+        self.assertEqual(body["settings"]["vault_path"], os.path.abspath(other))
+
 
 class NotesCardTests(unittest.TestCase):
     def setUp(self):
