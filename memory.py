@@ -78,9 +78,15 @@ class Store:
         return s
 
     def vault(self):
-        """The connected vault, or None."""
-        p = self.settings()["vault_path"]
-        return vaultmod.Vault(p) if vaultmod.is_vault(p) else None
+        """The connected vault, or None. A missing folder counts as not connected."""
+        try:
+            settings = self.settings()
+        except Exception:
+            return None
+        p = settings.get("vault_path") or ""
+        if not vaultmod.is_vault(p):
+            return None
+        return vaultmod.Vault(p, sync_folder=settings.get("sync_folder") or "Chatbox")
 
     def _vault_memory(self):
         v = self.vault()
@@ -122,17 +128,33 @@ class Store:
             raise ValueError("That folder doesn't exist.")
         local = self.memories() if not self._vault_memory() else []
         self.update_settings({"vault_path": path})
+        self._adopt_projects_folder()
         if self._vault_memory() and local:  # bring existing memories along
             have = {m["text"].lower() for m in self.memories()}
             merged = self.memories() + [m for m in local if m["text"].lower() not in have]
             with self.lock:
                 self._put(merged)
 
+    def _adopt_projects_folder(self):
+        """Point the default sync folder at Projects/Chatbox when that layout is already there."""
+        vault = self.vault()
+        if not vault:
+            return
+        folder = self.settings().get("sync_folder") or "Chatbox"
+        if folder not in ("", "Chatbox"):
+            return
+        try:
+            if vaultmod.has_projects_layout(vault.path):
+                self.update_settings({"sync_folder": "Projects/Chatbox"}, _prepare=False)
+        except Exception:
+            return
+
     def disconnect_vault(self):
         self.update_settings({"vault_path": ""})
 
     # ---- changes --------------------------------------------------------
-    def update_settings(self, new):
+    def update_settings(self, new, _prepare=True):
+        requested_folder = None
         with self.lock:
             s = self.settings()
             for k, v in (new or {}).items():
@@ -147,12 +169,20 @@ class Store:
                         s[k] = syncmod.clean_rel(v)
                     except ValueError:
                         s[k] = "Chatbox"
+                    requested_folder = s[k]
                 elif k == "ollama_url":
                     s[k] = str(v).strip()[:500]
                 elif k == "instructions":
                     s[k] = str(v)[:4000]
             self._save(self.settings_path, s)
-            return s
+        if _prepare and s.get("sync_chats"):
+            try:
+                import sync as syncmod
+                syncmod.prepare_vault(self, requested_folder=requested_folder)
+            except Exception:
+                pass
+            s = self.settings()
+        return s
 
     def add(self, text, source="you"):
         text = " ".join(str(text).split())[:MAX_MEMORY]
@@ -163,7 +193,8 @@ class Store:
             if any(m["text"].lower() == text.lower() for m in items):
                 return None  # already saved
             item = {"id": uuid.uuid4().hex[:12], "text": text, "source": source,
-                    "created": time.strftime("%Y-%m-%d")}
+                    "created": time.strftime("%Y-%m-%d"),
+                    "project": self._project_for_fact(text)}
             items.append(item)
             self._put(items)
             # A vault note stores the words only and reloads them with a hash id.
@@ -192,18 +223,31 @@ class Store:
             self._put([])
 
     # ---- use in chats ---------------------------------------------------
-    def version(self):
+    def _project_for_fact(self, text):
+        try:
+            vault = self.vault()
+            return vault.project_for_fact(text) if vault else ""
+        except Exception:
+            return ""
+
+    def version(self, project=""):
         """Changes whenever anything that goes into the chat context changes."""
         s = self.settings()
-        blob = json.dumps([s, [m["text"] for m in self.memories()]], sort_keys=True)
+        blob = json.dumps([s, [(m["text"], m.get("project") or "") for m in self.memories()],
+                           project or ""], sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:10]
 
-    def context(self):
-        """Text put before the user's message at the start of a chat ('' if nothing to send)."""
+    def context(self, project=""):
+        """Text put before the user's message at the start of a chat ('' if nothing to send).
+
+        Only general memories and the current project's memories are included.
+        """
         s = self.settings()
         if not s["use_memory"]:
             return ""
-        mems = self.memories()
+        current = (project or "").strip()
+        mems = [m for m in self.memories()
+                if not (m.get("project") or "").strip() or (m.get("project") or "").strip() == current]
         parts = []
         if s["instructions"].strip():
             parts.append("Custom instructions from the user:\n" + s["instructions"].strip())

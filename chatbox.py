@@ -459,21 +459,60 @@ def save_plan(reply, backend, workdir):
     return path
 
 
+def _match_project(vault, message, workdir, ranked=None):
+    """The project this turn is about, or ''. Never raises."""
+    try:
+        return vault.match_project(message or "", workdir or "", ranked=ranked,
+                                   search=ranked is None) or ""
+    except Exception:
+        return ""
+
+
 def _prepare_message(req):
-    """Context (memories, notes, plan rules) prepended to the user's message when needed."""
+    """Context (memories, vault map, notes, plan rules) prepended when needed."""
     session_id, message = req.get("session_id"), req.get("message", "")
-    version = MEMORY.version()
-    context = MEMORY.context() if (not session_id or req.get("context_version") != version) else ""
-    notes = []
     v = MEMORY.vault()
-    if v and MEMORY.settings()["use_memory"] and MEMORY.settings()["vault_search"]:
+    settings = MEMORY.settings()
+    use = settings["use_memory"]
+    ranked = []
+    project = ""
+    if v and use and settings["vault_search"]:
+        try:
+            ranked = v.rank(req.get("message", ""), exclude=set(req.get("sent_notes") or []))
+        except Exception:
+            ranked = []
+        project = _match_project(v, req.get("message", ""), req.get("workdir") or "", ranked)
+    elif v and use:
+        project = _match_project(v, req.get("message", ""), req.get("workdir") or "", ranked=[])
+    version = MEMORY.version(project)
+    fresh = not session_id or req.get("context_version") != version
+    context = MEMORY.context(project) if (use and fresh) else ""
+    notes = []
+    if v and use and settings["vault_search"]:
         if req.get("backend") in ("claude", "codex", "cursor"):
             context += "[Obsidian] " + v.search_hint() + "\n\n"
-        notes = v.search(req.get("message", ""), exclude=set(req.get("sent_notes") or []))
-        if notes:
+        if fresh:
+            try:
+                context += "[Vault map]\n" + v.map_text() + "\n[End of vault map]\n\n"
+            except Exception:
+                pass
+        try:
+            notes = v.pick(ranked, project=project or None)
+            hub = v.hub_snippet(project) if project else None
+        except Exception:
+            notes, hub = [], None
+        blocks = []
+        if hub:
+            blocks.append(f"### {hub['breadcrumb']}\n{hub['text']}")
+        for note in notes:
+            if hub and note["path"] == hub["path"]:
+                continue
+            blocks.append(f"### {note.get('breadcrumb') or note['path']}\n{note['text']}")
+        if blocks:
             context += ("[Notes from the user's Obsidian vault (their long-term memory) that may "
-                        "relate to this message. Use them if helpful.]\n\n"
-                        + "\n\n".join(f"### {n['path']}\n{n['text']}" for n in notes)
+                        "relate to this message. Use them if helpful. When a project matches, its "
+                        "hub note is first and notes inside that project rank higher.]\n\n"
+                        + "\n\n".join(blocks)
                         + "\n\n[End of notes]\n\n")
     if req.get("mode") == "plan":
         context += PLAN_PROMPT
@@ -601,10 +640,21 @@ def _sync_root():
     return syncmod.root_for(MEMORY)
 
 
+def _vault_path():
+    try:
+        vault = MEMORY.vault()
+    except Exception:
+        return None
+    return vault.path if vault else None
+
+
 def list_chats():
     root = _sync_root()
     if root:
-        return syncmod.list_chats(root)
+        try:
+            return syncmod.list_chats(root, vault_path=_vault_path())
+        except Exception:
+            return []
     out = []
     try:
         names = os.listdir(CHATS_DIR)
@@ -616,7 +666,7 @@ def list_chats():
         try:
             with open(os.path.join(CHATS_DIR, name), encoding="utf-8") as f:
                 c = json.load(f)
-            out.append({k: c.get(k) for k in ("id", "title", "updated", "backend")})
+            out.append({k: c.get(k) for k in ("id", "title", "updated", "backend", "project")})
         except (OSError, ValueError):
             continue
     out.sort(key=lambda c: c.get("updated") or 0, reverse=True)
@@ -626,7 +676,10 @@ def list_chats():
 def load_chat(cid):
     root = _sync_root()
     if root:
-        return syncmod.load_chat(root, cid)
+        try:
+            return syncmod.load_chat(root, cid, vault_path=_vault_path())
+        except Exception:
+            return None
     try:
         with open(_chat_path(cid), encoding="utf-8") as f:
             return json.load(f)
@@ -640,8 +693,13 @@ def save_chat(chat):
     chat["updated"] = time.time()
     root = _sync_root()
     if root:
-        syncmod.save_chat(root, chat)
-        return
+        try:
+            syncmod.save_chat(root, chat, vault_path=_vault_path())
+            return
+        except ValueError:
+            raise
+        except Exception:
+            pass  # vault write failed; keep the chat on this computer
     path = _chat_path(chat.get("id"))
     os.makedirs(CHATS_DIR, exist_ok=True)
     with open(path + ".tmp", "w", encoding="utf-8") as f:
@@ -652,7 +710,10 @@ def save_chat(chat):
 def delete_chat(cid):
     root = _sync_root()
     if root:
-        syncmod.delete_chat(root, cid)
+        try:
+            syncmod.delete_chat(root, cid, vault_path=_vault_path())
+        except Exception:
+            return
         return
     try:
         os.remove(_chat_path(cid))
@@ -661,12 +722,28 @@ def delete_chat(cid):
 
 
 def settings_payload():
-    v = MEMORY.vault()
-    where = (os.path.join(v.path, vaultmod.MEMORY_NOTE) if v and MEMORY.settings()["memory_in_vault"]
+    try:
+        v = MEMORY.vault()
+    except Exception:
+        v = None
+    settings = MEMORY.settings()
+    where = (os.path.join(v.path, v.memory_note()) if v and settings["memory_in_vault"]
              else MEMORY.memories_path)
-    return {"settings": MEMORY.settings(), "memories": MEMORY.memories(), "path": where,
+    projects = []
+    if v:
+        try:
+            projects = [{"name": p["name"], "description": p.get("description") or ""}
+                        for p in v.map().get("projects") or []]
+        except Exception:
+            projects = []
+    try:
+        installed = vaultmod.obsidian_installed()
+    except Exception:
+        installed = False
+    notice = vaultmod.connection_notice(settings.get("vault_path") or "", bool(v), installed)
+    return {"settings": settings, "memories": MEMORY.memories(), "path": where,
             "vault": v.info() if v else None, "detected": vaultmod.detect_vaults(),
-            "sync": syncmod.describe(MEMORY)}
+            "sync": syncmod.describe(MEMORY), "projects": projects, "obsidian_app": notice}
 
 
 def status():
@@ -817,7 +894,10 @@ class Handler(BaseHTTPRequestHandler):
                         v = MEMORY.vault()
                         if not v:
                             raise ValueError("Connect an Obsidian vault first (Accounts).")
-                        rel = v.save_chat(req.get("messages") or [], req.get("backend", ""))
+                        rel = v.save_chat(req.get("messages") or [], req.get("backend", ""),
+                                          workdir=req.get("workdir") or "",
+                                          project=req.get("project") or "",
+                                          locked=bool(req.get("project_lock")))
                         return self._send(200, json.dumps({"saved": rel, **settings_payload()}))
                     else:
                         raise ValueError("Unknown action")
@@ -849,7 +929,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"error": "Turn on Sync in Settings first.",
                                                    **settings_payload()}))
             try:
-                moved = syncmod.move_existing(DATA_DIR, root)
+                moved = syncmod.backfill_local(MEMORY)
+                if not moved.get("copied") and not moved.get("moved"):
+                    moved = syncmod.move_existing(DATA_DIR, root)
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
             return self._send(200, json.dumps({**moved, **settings_payload()}))
@@ -934,6 +1016,10 @@ def main():
     global CURRENT_PORT
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     CURRENT_PORT = srv.server_address[1]
+    try:
+        syncmod.prepare_vault(MEMORY)
+    except Exception:
+        pass
     start_updates()
     url = f"http://127.0.0.1:{CURRENT_PORT}/"
     print(f"Chatbox running at {url}  (Ctrl+C to stop)")
