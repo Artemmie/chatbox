@@ -18,6 +18,7 @@ def isolate(tmp=None):
     chatbox.chatgpt.init(tmp, lambda url: None)
     chatbox.ACCOUNTS._cache = None
     chatbox.ACCOUNTS._cache_time = 0
+    chatbox.authstatus.invalidate()
     chatbox._model_cache.clear()
     return chatbox, tmp
 
