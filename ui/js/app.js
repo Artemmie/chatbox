@@ -230,7 +230,7 @@ thread.addEventListener('click',async e=>{
   if(t.dataset.href!==undefined&&t.tagName==='A'){e.preventDefault();post('/api/open',{url:t.dataset.href});return;}
   if(t.hasAttribute('data-copy')){copy(item.t,t);return;}
   if(t.hasAttribute('data-copycode')){copy(t.closest('.codeblock').querySelector('code').textContent,t);return;}
-  if(t.hasAttribute('data-remember')){const r=await post('/api/memory',{action:'add',text:item.t.slice(0,500)});
+  if(t.hasAttribute('data-remember')){const r=await post('/api/memory',{action:'add',text:item.t.slice(0,500),chat_id:CHAT.id||''});
     t.innerHTML=ICON.brain+(r.error?esc(r.error):'Saved to memory');t.disabled=true;refreshMemCount();return;}
   if(t.hasAttribute('data-undo')){await post('/api/memory',{action:'delete',id:item.memId});row.textContent='Memory removed';delete item.memId;item.t='Memory removed';saveChat();refreshMemCount();return;}
   if(t.hasAttribute('data-openacc')){openAccounts();return;}
@@ -336,8 +336,17 @@ function toggleCollapsed(name){
   if(set.has(name))set.delete(name);else set.add(name);
   writeCollapsed(set);renderChatList();}
 async function deleteChat(id){
-  if(!await askConfirm('Delete this chat?'))return;
-  renderChatList(await post('/api/chats',{action:'delete',id}));
+  const mems=((await post('/api/chats',{action:'memories',id}).catch(()=>null))||{}).memories||[];
+  let drop=[];
+  if(mems.length){
+    const r=await ask({title:'Delete chat',message:'This chat saved '+(mems.length===1?'a memory':mems.length+' memories')+':\n\n'
+        +mems.map(m=>'• '+m.text).join('\n')+'\n\nDelete '+(mems.length===1?'it':'them')+' too?',
+      buttons:[{id:'all',label:'Delete chat and memories',primary:true},{id:'chat',label:'Keep memories'},{id:'cancel',label:'Cancel',cancel:true}]});
+    if(!r||r.id==='cancel')return;
+    if(r.id==='all')drop=mems.map(m=>m.id);
+  }else if(!await askConfirm('Delete this chat?'))return;
+  renderChatList(await post('/api/chats',{action:'delete',id,memories:drop}));
+  if(drop.length)refreshMemCount();
   if(CHAT&&CHAT.id===id)startNew();}
 async function moveChat(id,project){
   project=project||'';
@@ -718,7 +727,7 @@ async function streamInto(pend, b, text, mode, model, fileIds, opts){
     if(box)box.innerHTML=md(live);scrollDown();};
   try{
     const payload={backend:b,message:text,session_id:opts.handoff?null:CHAT.sessions[b],mode,context_version:CHAT.ctx[b],
-      sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home,turn_id:turnId,attachments:fileIds||[]};
+      sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home,turn_id:turnId,chat_id:CHAT.id||'',attachments:fileIds||[]};
     if(opts.handoff){payload.handoff=true;payload.history=opts.history||[];}
     const resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},signal:ac.signal,
       body:JSON.stringify(payload)});
@@ -740,7 +749,7 @@ async function streamInto(pend, b, text, mode, model, fileIds, opts){
 async function send(text, opts){
   opts=opts||{};
   const rm=text.match(/^\/remember\s+([\s\S]+)/i);
-  if(rm){const r=await post('/api/memory',{action:'add',text:rm[1]});
+  if(rm){const r=await post('/api/memory',{action:'add',text:rm[1],chat_id:CHAT.id||''});
     if(r.error)note(r.error);else{const m=r.memories.find(x=>x.text.toLowerCase()===rm[1].trim().replace(/\s+/g,' ').toLowerCase())||r.memories[r.memories.length-1];
       addItem({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id});refreshMemCount();}return;}
   let targets=opts.backend?[opts.backend]:activeChoice().filter(ready);

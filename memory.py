@@ -447,7 +447,7 @@ class Store:
             s = self.settings()
         return s
 
-    def add(self, text, source="you"):
+    def add(self, text, source="you", chat=""):
         text = " ".join(str(text).split())[:MAX_MEMORY]
         if not text:
             raise ValueError("Memory is empty.")
@@ -458,11 +458,29 @@ class Store:
             item = {"id": uuid.uuid4().hex[:12], "text": text, "source": source,
                     "created": time.strftime("%Y-%m-%d"),
                     "project": self._project_for_fact(text)}
+            if re.fullmatch(r"[a-f0-9]{12}", str(chat or "")):
+                item["chat"] = chat  # so deleting that chat can offer to delete this too
             items.append(item)
             self._put(items)
             # A vault note stores the words only and reloads them with a hash id.
             # Return that id, so Undo deletes the line that was just written.
             return next((m for m in self.memories() if m["text"].lower() == text.lower()), item)
+
+    def for_chat(self, cid):
+        """Memories saved from this chat."""
+        if not re.fullmatch(r"[a-f0-9]{12}", str(cid or "")):
+            return []
+        return [m for m in self.memories() if m.get("chat") == cid]
+
+    def delete_many(self, ids):
+        ids = set(ids or [])
+        if not ids:
+            return
+        with self.lock:
+            items = self.memories()
+            keep = [m for m in items if m["id"] not in ids]
+            if len(keep) != len(items):
+                self._put(keep)
 
     def edit(self, mid, text):
         text = " ".join(str(text).split())[:MAX_MEMORY]
@@ -533,7 +551,7 @@ class Store:
                 "Use it when relevant; don't mention this block unless asked.]\n\n"
                 + "\n\n".join(parts) + "\n\n[End of Chatbox context]\n\n")
 
-    def take_memories(self, reply, user_message="", vault_notes=None):
+    def take_memories(self, reply, user_message="", vault_notes=None, chat_id=""):
         """Remove REMEMBER lines and save at most one the user actually stated.
 
         `user_message` is the text the user sent this turn (not the prompt with
@@ -563,7 +581,7 @@ class Store:
                 continue
             if _covers(tokens, said) < USER_GROUND:
                 continue
-            item = self.add(text, source="assistant")
+            item = self.add(text, source="assistant", chat=chat_id)
             if item:
                 saved.append(item)
                 existing.append(item)
