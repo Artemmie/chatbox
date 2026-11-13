@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import accounts
 import attachments
 import chatgpt
+import handoff
 import memory
 import ollama
 import streaming
@@ -468,9 +469,25 @@ def _match_project(vault, message, workdir, ranked=None):
         return ""
 
 
+def _session_for_turn(req):
+    """None when this turn must start a fresh CLI session.
+
+    A handoff always starts fresh. The transcript goes in the prompt, which is
+    how backends that cannot resume another assistant's session still see the chat.
+    """
+    if req.get("handoff"):
+        return None
+    return req.get("session_id") or None
+
+
 def _prepare_message(req):
-    """Context (memories, vault map, notes, plan rules) prepended when needed."""
-    session_id, message = req.get("session_id"), req.get("message", "")
+    """Context (memories, vault map, notes, plan rules) prepended when needed.
+
+    A fresh session also gets a compact transcript of earlier turns (who spoke,
+    which assistant answered), trimmed to a fixed budget.
+    """
+    session_id = _session_for_turn(req)
+    message = req.get("message", "")
     v = MEMORY.vault()
     settings = MEMORY.settings()
     use = settings["use_memory"]
@@ -514,6 +531,10 @@ def _prepare_message(req):
                         "hub note is first and notes inside that project rank higher.]\n\n"
                         + "\n\n".join(blocks)
                         + "\n\n[End of notes]\n\n")
+    if not session_id:
+        transcript = handoff.compact_transcript(req.get("history"))
+        if transcript:
+            context += transcript
     if req.get("mode") == "plan":
         context += PLAN_PROMPT
     if context:
@@ -574,7 +595,8 @@ def chat_stream(req):
                 yield {"type": "error", "error": problem, "context_version": req.get("context_version")}
                 return
             started = time.time()
-            gen = iter_backend(backend, message, req.get("session_id"), req.get("mode", "ask"),
+            # Handoff and any other fresh session pass history in the prompt, not via --resume.
+            gen = iter_backend(backend, message, _session_for_turn(req), req.get("mode", "ask"),
                                model, req.get("workdir"), turn, files)
             try:
                 while True:

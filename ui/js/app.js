@@ -27,6 +27,7 @@ function stopTurns(){for(const [id,ac] of inflight){post('/api/cancel',{turn_id:
 const S={backend:store.get('backend')||'claude',mode:store.get('mode')||'ask',busy:false,none:false,
   workdir:store.get('workdir')||'',home:''};
 let CHAT=null; // current conversation
+let carry=null; // backend whose next fresh turn should include the transcript
 function newChatState(){return {id:null,title:'',created:Date.now(),backend:S.backend,project:'',project_lock:false,items:[],sessions:fresh(),ctx:fresh(),sent:fresh()};}
 
 // ===== markdown =====
@@ -90,17 +91,18 @@ function renderProject(){
   const focus=document.activeElement===sel;
   if(!focus){sel.innerHTML=html;sel.value=current||'';}
 }
-function setEmpty(){const e=!CHAT.items.length;$('#main').classList.toggle('is-empty',e);$('#suggest').hidden=!e;
-  $('#title').textContent=e?'':(CHAT.title||'New chat');renderProject();}
+function setEmpty(){ensureHandoff();const e=!CHAT.items.length;$('#main').classList.toggle('is-empty',e);$('#suggest').hidden=!e;
+  $('#title').textContent=e?'':(CHAT.title||'New chat');const ho=$('#p-handoff');if(ho)ho.hidden=e;renderProject();}
 function actionsHTML(withRemember=true){return '<div class="actions"><button type="button" data-copy>'+ICON.copy+'Copy</button>'
-  +(withRemember?'<button type="button" data-remember>'+ICON.brain+'Remember</button>':'')+'</div>';}
+  +(withRemember?'<button type="button" data-remember>'+ICON.brain+'Remember</button>':'')
+  +'<button type="button" data-ask>Ask another AI about this</button><div class="askpop" hidden></div></div>';}
 function render(item, parent){ // one stored item -> DOM. parent defaults to the thread.
   const d=document.createElement('div');d.item=item;
   if(item.r==='you'){d.className='m-you';
     const files=item.files&&item.files.length?'<div class="files">'+item.files.map(f=>'<span>'+esc(f.name)+'</span>').join('')+'</div>':'';
     d.innerHTML='<div class="bubble">'+(item.t?esc(item.t):'')+files+'</div>'+actionsHTML();}
-  else if(item.r==='bot'||item.r==='err'){d.className='m-bot';const b=item.b;
-    d.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]
+  else if(item.r==='bot'||item.r==='err'){d.className='m-bot';const b=item.b;const who=NAMES[b]||'Assistant';
+    d.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+(INITIAL[b]||who.slice(0,1))+'</div><div class="body"><div class="name">'+who
       +(item.mode?'<span class="meta">'+MODES[item.mode][0]+(item.model?' · '+esc(item.model):'')+(item.u?usageMeta(item.u):'')+'</span>':'')+'</div>'
       +(item.r==='err'?'<div class="err">'+esc(item.t)+'</div>'+(/Open Accounts/.test(item.t)?'<div class="row" style="margin-top:8px"><button class="ghost" type="button" data-openacc>Open Accounts</button></div>':'')
         :'<div class="md">'+md(item.t)+'</div>'+actionsHTML())+'</div>';}
@@ -139,7 +141,10 @@ thread.addEventListener('click',async e=>{
   if(t.hasAttribute('data-planopen')){post('/api/openfile',{path:item.path});return;}
   if(t.hasAttribute('data-plango')){if(!ready(item.b)){note(NAMES[item.b]+' is not connected.');return;}
     setBackend(item.b);setMode('agent');
-    send('Implement the plan in "'+item.path+'". Work through the checklist step by step, and tick off each item in that file ("- [x]") as you finish it.');}});
+    send('Implement the plan in "'+item.path+'". Work through the checklist step by step, and tick off each item in that file ("- [x]") as you finish it.');return;}
+  if(t.hasAttribute('data-ask')||t.hasAttribute('data-askto')) e.stopPropagation();
+  if(t.hasAttribute('data-ask')){openAskMenu(row,item);return;}
+  if(t.hasAttribute('data-askto')){closeAskMenus();askOther(item,t.dataset.askto);}});
 async function copy(text,btn){try{await navigator.clipboard.writeText(text);}catch(e){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();}
   const old=btn.innerHTML;btn.innerHTML=ICON.copy+'Copied';setTimeout(()=>btn.innerHTML=old,1400);}
 
@@ -167,13 +172,14 @@ $('#chatlist').addEventListener('click',async e=>{const it=e.target.closest('.ch
   if(e.target.closest('.del')){if(!confirm('Delete this chat?'))return;renderChatList(await post('/api/chats',{action:'delete',id}));if(CHAT.id===id)startNew();return;}
   if(S.busy){note('Stop the current reply before opening another chat.');return;}
   const c=await fetch('/api/chats/'+id).then(r=>r.json());if(c.error)return;
+  carry=null;
   CHAT={...newChatState(),...c,sessions:{...fresh(),...c.sessions},ctx:{...fresh(),...c.ctx},sent:{...fresh(),...c.sent}};
   renderThread();
   if(c.workdir){S.workdir=c.workdir;store.set('workdir',c.workdir);}
   if(c.backend&&ready(c.backend))setBackend(c.backend,true);paint();
   document.querySelectorAll('.chatitem').forEach(x=>x.classList.toggle('cur',x.dataset.id===id));
   if(innerWidth<760)$('#app').classList.add('noside');scrollDown();$('#msg').focus();});
-function startNew(){if(S.busy)return;CHAT=newChatState();thread.innerHTML='';$('#main').classList.remove('comparing');setEmpty();
+function startNew(){if(S.busy)return;carry=null;CHAT=newChatState();thread.innerHTML='';$('#main').classList.remove('comparing');setEmpty();
   document.querySelectorAll('.chatitem').forEach(x=>x.classList.remove('cur'));$('#msg').focus();}
 $('#newchat').onclick=startNew;
 $('#sideclose').onclick=()=>{$('#app').classList.add('noside');store.set('noside','1');};
@@ -185,7 +191,8 @@ function pick(id,btnHTML,itemsHTML){const p=$(id);p.querySelector('.pickbtn').in
 document.addEventListener('click',e=>{const pb=e.target.closest('.pickbtn');const inside=e.target.closest('.pick');
   const p=pb&&pb.parentElement.classList.contains('pick')?pb.parentElement:null;
   document.querySelectorAll('.pick.open').forEach(x=>{if(x!==p&&x!==inside)x.classList.remove('open');});if(p)p.classList.toggle('open');});
-document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.pick.open').forEach(x=>x.classList.remove('open'));});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.querySelectorAll('.pick.open').forEach(x=>x.classList.remove('open'));closeAskMenus();}});
+document.addEventListener('click',e=>{if(e.target.closest('.askpop')||e.target.closest('[data-ask]'))return;closeAskMenus();});
 function chosen(){
   let list=null;try{list=JSON.parse(store.get('backends')||'null');}catch(e){list=null;}
   if(!Array.isArray(list)||!list.length) list=[S.backend];
@@ -276,7 +283,7 @@ $('#p-model').addEventListener('click',e=>{const t=e.target.closest('.mi');if(!t
 $('#folderbtn').onclick=()=>{$('#folderinput').value=S.workdir||S.home;$('#dfolder').showModal();$('#folderinput').select();};
 $('#folderform').onsubmit=e=>{e.preventDefault();const v=$('#folderinput').value.trim();$('#dfolder').close();
   if(!v||v===S.workdir)return;S.workdir=v;store.set('workdir',v);
-  if(CHAT.items.length){CHAT.sessions=fresh();CHAT.sent=fresh();note('Folder changed to '+v+' — assistants start fresh conversations.');}
+  if(CHAT.items.length){CHAT.sessions=fresh();CHAT.sent=fresh();carry=null;note('Folder changed to '+v+' — assistants start fresh conversations.');}
   paint();};
 
 // ===== composer =====
@@ -349,9 +356,11 @@ function modelLabel(b, model, usage){
   return (Array.isArray(list)&&list.find(m=>m[0]===model)||[model,model])[1];
 }
 function modeFor(b, mode){return NOFOLDER(b)&&mode==='agent'?'ask':mode;}
-function turnParts(b, mode, model, r, partial, group){
-  if(r.session_id)CHAT.sessions[b]=r.session_id;
-  if(r.context_version!==undefined)CHAT.ctx[b]=r.context_version;
+function turnParts(b, mode, model, r, partial, group, adopt){
+  if(adopt!==false){
+    if(r.session_id)CHAT.sessions[b]=r.session_id;
+    if(r.context_version!==undefined)CHAT.ctx[b]=r.context_version;
+  }
   const label=modelLabel(b, model, r.usage);
   const u=r.usage?{tok:(r.usage.input||0)+(r.usage.output||0),s:r.usage.seconds,cost:r.usage.cost}:null;
   const bots=[], rest=[];
@@ -368,7 +377,7 @@ function turnParts(b, mode, model, r, partial, group){
   }
   if(r.plan_file) rest.push({r:'plan',path:r.plan_file,b});
   if(r.plan_error) rest.push({r:'note',t:r.plan_error});
-  if(r.notes_used&&r.notes_used.length){CHAT.sent[b]=(CHAT.sent[b]||[]).concat(r.notes_used.map(n=>n.path));
+  if(r.notes_used&&r.notes_used.length){if(adopt!==false)CHAT.sent[b]=(CHAT.sent[b]||[]).concat(r.notes_used.map(n=>n.path));
     rest.push({r:'note',t:'📓 Used from Obsidian: '+r.notes_used.map(n=>n.title).join(', ')});}
   (r.saved_memories||[]).forEach(m=>rest.push({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id}));
   return {bots, rest, memories:!!(r.saved_memories&&r.saved_memories.length)};
@@ -384,7 +393,8 @@ function pendingBubble(b, mode){
   pend.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+INITIAL[b]+'</div><div class="body"><div class="name">'+NAMES[b]+'</div><div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span class="tm">'+phase+'…</span></div></div>';
   pend.dataset.phase=phase;return pend;
 }
-async function streamInto(pend, b, text, mode, model, fileIds){
+async function streamInto(pend, b, text, mode, model, fileIds, opts){
+  opts=opts||{};
   const phase=pend.dataset.phase||'Thinking';
   let live='', r={}, raf=0;
   const turnId=newTurnId(), ac=new AbortController();
@@ -395,9 +405,11 @@ async function streamInto(pend, b, text, mode, model, fileIds){
     if(!box){const th=pend.querySelector('.thinking');if(th)th.outerHTML='<div class="md"></div>';box=pend.querySelector('.md');}
     if(box)box.innerHTML=md(live);scrollDown();};
   try{
+    const payload={backend:b,message:text,session_id:opts.handoff?null:CHAT.sessions[b],mode,context_version:CHAT.ctx[b],
+      sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home,turn_id:turnId,attachments:fileIds||[]};
+    if(opts.handoff){payload.handoff=true;payload.history=opts.history||[];}
     const resp=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},signal:ac.signal,
-      body:JSON.stringify({backend:b,message:text,session_id:CHAT.sessions[b],mode,context_version:CHAT.ctx[b],
-        sent_notes:CHAT.sent[b]||[],model,workdir:S.workdir||S.home,turn_id:turnId,attachments:fileIds||[]})});
+      body:JSON.stringify(payload)});
     await readEvents(resp, ev=>{
       if(ev.type==='delta'){live+=(ev.text||'');if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
       else if(ev.type==='replace'){live=ev.text||'';if(!raf)raf=requestAnimationFrame(()=>{raf=0;paintLive();});}
@@ -413,25 +425,31 @@ async function streamInto(pend, b, text, mode, model, fileIds){
   return {r:r.type?r:{type:'error',error:r.error||'No reply.'}, live};
 }
 
-async function send(text){
+async function send(text, opts){
+  opts=opts||{};
   const rm=text.match(/^\/remember\s+([\s\S]+)/i);
   if(rm){const r=await post('/api/memory',{action:'add',text:rm[1]});
     if(r.error)note(r.error);else{const m=r.memories.find(x=>x.text.toLowerCase()===rm[1].trim().replace(/\s+/g,' ').toLowerCase())||r.memories[r.memories.length-1];
       addItem({r:'note',t:'🧠 Saved to memory: '+m.text,memId:m.id});refreshMemCount();}return;}
-  let targets=activeChoice().filter(ready);
+  let targets=opts.backend?[opts.backend]:activeChoice().filter(ready);
   if(!targets.length) targets=[S.backend];
-  const files=FILES.splice(0,FILES.length);paintClips();
+  const files=opts.handoff?[]:FILES.splice(0,FILES.length);
+  if(!opts.handoff) paintClips();
   const ids=files.map(f=>f.id), shown=files.map(f=>({name:f.name,kind:f.kind}));
   if(targets.length>1) return sendMany(text, targets, ids, shown);
   const b=targets[0], mode=modeFor(b, S.mode), model=modelFor(b);
   CHAT.workdir=S.workdir||S.home; // each chat keeps its own folder (sessions belong to it)
+  const prior=Array.isArray(opts.history)?opts.history:historyPayload(CHAT.items);
   addItem({r:'you',t:text,b,files:shown});
+  const pass=!!opts.handoff || (carry===b && !CHAT.sessions[b] && prior.length>0);
+  if(pass) CHAT.sessions[b]=null; // fresh CLI session; the transcript rides in the prompt
   const pend=pendingBubble(b, mode);
   thread.appendChild(pend);scrollDown();
   S.busy=true;paint();
-  const {r,live}=await streamInto(pend, b, text, mode, model, ids);
+  const {r,live}=await streamInto(pend, b, text, mode, model, ids, pass?{handoff:true,history:prior}:null);
   pend.remove();S.busy=false;
   finishTurn(b, mode, model, r, live);
+  if(pass) carry=CHAT.sessions[b]?null:b;
   saveChat();paint();msg.focus();}
 async function sendMany(text, targets, ids, shown){
   const mode=S.mode;
@@ -459,6 +477,137 @@ async function sendMany(text, targets, ids, shown){
   renderThread();scrollDown();saveChat();
   if(memories) refreshMemCount();
   S.busy=false;paint();msg.focus();}
+
+// ===== handoff: switch assistant and carry the conversation =====
+function historyPayload(items){
+  const src=Array.isArray(items)?items:CHAT.items;
+  const out=[];
+  src.forEach(i=>{
+    if(!i||i.temp||(i.r!=='you'&&i.r!=='bot'&&i.r!=='err')) return;
+    const t=String(i.t||'').trim();
+    const files=(i.files||[]).filter(f=>f&&f.name).map(f=>({name:String(f.name).slice(0,120),kind:f.kind||''}));
+    if(!t&&!files.length) return;
+    out.push({r:i.r,t:t.slice(0,8000),b:i.b||'',model:i.model||'',files});
+  });
+  return out.length>200?out.slice(-200):out;
+}
+function clipQuote(t){t=String(t||'').trim();return t.length>1500?t.slice(0,1500).replace(/\s+\S*$/,'')+'…':t;}
+function closeAskMenus(){
+  document.querySelectorAll('.askpop').forEach(p=>{p.hidden=true;});
+  document.querySelectorAll('.actions.on').forEach(a=>a.classList.remove('on'));
+}
+function openAskMenu(row, item){
+  const pop=row&&row.querySelector('.askpop'); if(!pop||!item) return;
+  const was=pop.hidden;
+  closeAskMenus();
+  if(!was) return;
+  const skip=item.r==='you'?S.backend:item.b;
+  const buttons=BACKENDS.filter(b=>b!==skip).map(b=>{
+    const ok=!ACCLOADED||ready(b);
+    return '<button type="button" data-askto="'+b+'"'+(ok?'':' disabled')+'>'+esc(NAMES[b])+'</button>';
+  }).join('');
+  pop.innerHTML=buttons||'<span class="muted">No other assistant</span>';
+  pop.hidden=false;
+  const actions=row.querySelector('.actions'); if(actions) actions.classList.add('on');
+}
+function lastExchange(){
+  let you=-1;
+  for(let i=CHAT.items.length-1;i>=0;i--){if(CHAT.items[i].r==='you'&&!CHAT.items[i].temp){you=i;break;}}
+  if(you<0) return null;
+  const answers=[];
+  for(let i=you+1;i<CHAT.items.length;i++){
+    const it=CHAT.items[i];
+    if(!it||it.temp) continue;
+    if(it.r==='bot'||it.r==='err') answers.push(it);
+    else if(it.r==='you') break;
+  }
+  return {you, question:CHAT.items[you].t||'', answers};
+}
+function handoffMenu(){
+  const others=BACKENDS.filter(b=>b!==S.backend);
+  const ex=lastExchange();
+  const answered=new Set((ex&&ex.answers||[]).map(a=>a.b));
+  const row=(b, kind)=>{
+    const ok=ready(b);
+    const enabled=kind==='compare'?!!(ok&&ex&&ex.answers.length&&!answered.has(b)):ok;
+    const sub=kind==='compare'
+      ?(ex&&ex.answers.length?(answered.has(b)?'Already answered this':'Same last question, side by side'):'Ask something first')
+      :(ok?'Switch and include this chat':'Not connected');
+    return '<button type="button" class="mi" data-'+kind+'="'+b+'"'+(enabled?'':' disabled')+'><span class="bdot" style="background:'+color(b)+'"></span><span class="mt"><b>'+NAMES[b]+'</b><span>'+sub+'</span></span></button>';
+  };
+  return '<div class="mh">Hand off to…</div>'+others.map(b=>row(b,'handoff')).join('')
+    +'<div class="mh">Compare</div>'+others.map(b=>row(b,'compare')).join('');
+}
+function ensureHandoff(){
+  if($('#p-handoff')) return;
+  const el=document.createElement('div');
+  el.className='pick down'; el.id='p-handoff'; el.hidden=true;
+  el.innerHTML='<button type="button" class="pickbtn" title="Hand off this chat to another assistant, or compare the last answer"><span class="lbl">Hand off to…</span>'+ICON.chev+'</button><div class="menu"></div>';
+  const title=$('#title'); if(title) title.insertAdjacentElement('afterend', el);
+  el.addEventListener('click', e=>{
+    const t=e.target.closest('.mi');
+    if(!t){const menu=el.querySelector('.menu'); if(menu) menu.innerHTML=handoffMenu(); return;}
+    el.classList.remove('open');
+    if(t.disabled) return;
+    if(t.dataset.handoff) handOff(t.dataset.handoff);
+    else if(t.dataset.compare) compareWith(t.dataset.compare);
+  });
+}
+async function handOff(b){
+  if(S.busy){note('Stop the current reply before handing off.');return;}
+  if(!ready(b)){note(NAMES[b]+' is not connected.');return;}
+  setBackend(b,true);
+  if(!CHAT.items.some(i=>!i.temp&&(i.r==='you'||i.r==='bot'||i.r==='err'))){note('Now chatting with '+NAMES[b]+'.');return;}
+  CHAT.sessions[b]=null; carry=b;
+  await send('Hand off to '+NAMES[b]+'. Continue this conversation from the earlier turns.',
+    {backend:b, handoff:true, history:historyPayload()});
+}
+async function askOther(item, b){
+  if(!item) return;
+  if(S.busy){note('Stop the current reply before asking another assistant.');return;}
+  if(!ready(b)){note(NAMES[b]+' is not connected.');return;}
+  setBackend(b,true);
+  CHAT.sessions[b]=null; carry=b;
+  const who=item.r==='you'?'You':(NAMES[item.b]||'Assistant');
+  const quote=clipQuote(item.t||'');
+  const text=item.r==='you'
+    ? 'Ask '+NAMES[b]+' about this:\n\n'+quote
+    : 'Ask '+NAMES[b]+' about this message from '+who+':\n\n'+quote;
+  await send(text, {backend:b, handoff:true, history:historyPayload()});
+}
+async function compareWith(b){
+  if(S.busy){note('Stop the current reply before comparing.');return;}
+  if(!ready(b)){note(NAMES[b]+' is not connected.');return;}
+  const ex=lastExchange();
+  if(!ex||!ex.answers.length){note('Ask something and wait for a reply, then you can compare.');return;}
+  if(ex.answers.some(a=>a.b===b)){note(NAMES[b]+' already answered this.');return;}
+  const group=ex.answers[0].group||newTurnId().slice(0,12);
+  ex.answers.forEach(a=>{a.group=group;});
+  const prior=historyPayload(CHAT.items.slice(0, ex.you));
+  let question=String(ex.question||'').trim();
+  if(!question){
+    const names=(CHAT.items[ex.you].files||[]).map(f=>f&&f.name).filter(Boolean);
+    question=names.length?'Please look at the attached files: '+names.join(', '):'Please answer the last question.';
+  }
+  const mode=modeFor(b, S.mode), model=modelFor(b);
+  renderThread();
+  const wrap=[...thread.querySelectorAll('.compare')].find(n=>{const row=n.querySelector('.m-bot,.m-you');return row&&row.item&&row.item.group===group;});
+  const pend=pendingBubble(b, mode);
+  (wrap||thread).appendChild(pend);
+  $('#main').classList.add('comparing'); scrollDown();
+  S.busy=true; paint();
+  const {r,live}=await streamInto(pend, b, question, mode, model, [], {handoff:true, history:prior});
+  delete r.session_id; // side-by-side answer must not replace that assistant's real session
+  const parts=turnParts(b, mode, model, r, live, group, false);
+  const after=ex.answers[ex.answers.length-1];
+  let at=CHAT.items.indexOf(after);
+  at=at<0?CHAT.items.length:at+1;
+  parts.bots.forEach(item=>{CHAT.items.splice(at,0,item);at++;});
+  parts.rest.forEach(item=>CHAT.items.push(item));
+  renderThread(); scrollDown(); saveChat();
+  if(parts.memories) refreshMemCount();
+  S.busy=false; paint(); msg.focus();
+}
 
 // ===== settings & memory =====
 function renderSettings(p){
@@ -766,6 +915,7 @@ async function refreshChats(){
   if(!row||!(row.updated> (CHAT.updated||0)+0.001))return;
   const c=await fetch('/api/chats/'+CHAT.id).then(r=>r.json());
   if(c.error||S.busy||!CHAT||CHAT.id!==c.id)return;
+  carry=null;
   CHAT={...newChatState(),...c,sessions:{...fresh(),...c.sessions},ctx:{...fresh(),...c.ctx},sent:{...fresh(),...c.sent}};
   renderThread();scrollDown();
 }

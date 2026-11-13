@@ -8,7 +8,7 @@ The main window, with a short conversation and saved chats in the sidebar.
 
 ## What it does
 
-- **All your assistants in one place.** Cursor, Claude, Codex, ChatGPT and local models through Ollama share one window. Switch mid-conversation — each keeps its own part of the chat — or ask several of them the same thing and watch the answers arrive side by side.
+- **All your assistants in one place.** Cursor, Claude, Codex, ChatGPT and local models through Ollama share one window. Switch mid-conversation — each keeps its own part of the chat — hand the conversation to another assistant, or ask several of them the same thing and watch the answers arrive side by side.
 - **A normal chat.** Saved chats in the sidebar, replies with headings, lists, tables and code (with a Copy button), and one composer where you pick the assistant, mode, model and folder.
 - **Shared memory.** Save a fact once ("I use Unity 6 and C#", "answer in Russian") and every assistant gets it. Custom instructions live in the same place.
 - **Your Obsidian vault.** Notes related to your message are found and given to the assistant, memories can live in the vault, and chats can sync through it to your other computers.
@@ -119,6 +119,7 @@ Usage counts toward each service's plan, exactly as if you used its own app. Rep
 ## Features
 
 - **Five assistants plus local models**, one window. Assistants that aren't connected are greyed out until you sign in. In the assistant menu, select more than one to ask them together; each answer streams in its own column and **Stop** cancels every one of them.
+- **Hand off and compare.** **Hand off to…** switches the chat to another assistant and sends a compact transcript of who said what, including which assistant answered. On a message, **Ask another AI about this** does the same for that turn. **Compare** sends the last question to a second assistant and shows the two answers side by side. Every reply stays labeled with the assistant that wrote it, including in synced Obsidian notes.
 - **Streaming replies** – Claude, Cursor, Codex, ChatGPT and Ollama show text as it is produced. If a CLI build can't stream token by token, Chatbox falls back to the next output mode that build supports and still shows the answer when it arrives.
 - **Stop and timeouts** – the send button becomes **Stop** while a reply is running and actually kills that request. A CLI that never speaks is stopped after 3 minutes, one that goes quiet after 5, and every turn after 10 (`CHATBOX_START_TIMEOUT`, `CHATBOX_IDLE_TIMEOUT`, `CHATBOX_TIMEOUT`). A missing tool, a signed-out account, or a hang is reported in the chat instead of spinning forever.
 - **Files and images** – drop them on the composer or use the paperclip. Cursor, Claude and Codex get the files in the working folder and are asked to read them. ChatGPT (your plan) can take text, images and PDFs. Ollama can take text, and images when that model can see them. A chip on the composer says when a selected assistant can't take a file; that assistant's reply then says so too.
