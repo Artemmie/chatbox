@@ -1014,6 +1014,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 result = {"path": "", "cancelled": False, "error": str(e)}
             return self._send(200, json.dumps(result))
+        if self.path == "/api/browse-folder":
+            try:
+                result = folderpick.browse(req.get("path") or "")
+            except Exception as e:
+                result = {"error": str(e), "path": "", "parent": "", "folders": []}
+            return self._send(200, json.dumps(result))
         if self.path == "/api/sync" and req.get("action") == "move":
             root = syncmod.root_for(MEMORY)
             if not root:

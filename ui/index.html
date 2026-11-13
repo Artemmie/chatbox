@@ -11,6 +11,7 @@
       <button class="icon" id="sideclose" title="Close sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
     </div>
     <button class="newchat" id="newchat"><span class="plus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>New chat</button>
+    <div id="chatsearchwrap" class="chatsearch" hidden><input class="field" id="chatsearch" type="search" placeholder="Search chats" aria-label="Search chats"></div>
     <nav id="chatlist"></nav>
     <div class="side-bottom">
       <div id="authrow" class="authrow" aria-label="Sign-in status"></div>
@@ -33,8 +34,7 @@
     </div>
     <header class="top">
       <button class="icon" id="sideopen" title="Open sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
-      <div class="title" id="title"></div>
-      <select id="projectpick" class="projectpick" hidden title="Obsidian project"></select>
+      <button type="button" class="title" id="title" title="Rename this chat"></button>
       <button class="pillbtn" id="savebtn" hidden title="Save this chat as a note in your Obsidian vault"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6"/></svg>Save to Obsidian</button>
     </header>
     <div id="scroll">
@@ -45,6 +45,7 @@
       <div class="thread" id="thread"></div>
     </div>
     <div class="composer-wrap">
+      <button type="button" id="tolatest" class="tolatest" hidden title="Jump to the latest message" aria-label="Jump to the latest message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button>
       <form class="composer" id="f">
         <textarea id="msg" rows="1" placeholder="How can I help you today?"></textarea>
         <div id="clips" class="clips"></div>
@@ -54,6 +55,7 @@
           <div class="pick" id="p-backend"><button type="button" class="pickbtn strong"></button><div class="menu"></div></div>
           <div class="pick" id="p-mode"><button type="button" class="pickbtn"></button><div class="menu"></div></div>
           <button type="button" class="pickbtn" id="folderbtn" title="Folder the assistant works in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="lbl" id="folderlbl"></span></button>
+          <div class="pick" id="p-project" hidden><button type="button" class="pickbtn" title="Project this chat is filed under in your notes"></button><div class="menu"></div></div>
           <span class="grow"></span>
           <div class="pick right" id="p-model"><button type="button" class="pickbtn"></button><div class="menu"></div></div>
           <button class="send" id="send" title="Send (Enter)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
@@ -69,7 +71,7 @@
   <div class="dlg-h"><h2>Working folder</h2><button class="icon" data-close title="Close">✕</button></div>
   <form class="dlg-b" id="folderform">
     <p class="intro">Cursor, Claude and Codex work in this folder. In Agent mode they can change files here; plans are saved to its <code>plans/</code> folder.</p>
-    <input class="field" id="folderinput" placeholder="~/projects/my-app">
+    <div class="row"><input class="field" id="folderinput" placeholder="~/projects/my-app" style="flex:1;min-width:200px"><button class="ghost" type="button" id="folderbrowse">Browse…</button></div>
     <div class="row"><button class="btn">Use this folder</button><span class="muted">Changing it starts fresh conversations.</span></div>
   </form>
 </dialog>
@@ -78,112 +80,157 @@
   <div class="dlg-h"><h2>Usage</h2><button class="icon" data-close title="Close">✕</button></div>
   <div class="dlg-b">
     <div class="row" style="justify-content:space-between">
-      <div class="seg" id="u-range"><button data-d="7">7 days</button><button data-d="30">30 days</button><button data-d="0">All time</button></div>
-      <div class="seg" id="u-metric"><button data-k="messages">Messages</button><button data-k="tokens">Tokens</button></div>
+      <p class="intro">What you have sent through Chatbox. Stored only on this computer.</p>
+      <div class="seg" id="u-range" role="group" aria-label="Time range"><button data-d="7">7 days</button><button data-d="30">30 days</button><button data-d="0">All time</button></div>
     </div>
-    <div class="tiles" id="u-tiles"></div>
-    <section class="sec">
-      <div class="sec-h"><b id="u-charttitle">Messages per day</b></div>
-      <div class="legend" id="u-legend"></div>
-      <div class="chart" id="u-chart"></div>
+    <div class="uempty" id="u-empty" hidden><b>Nothing here yet</b><span>Send a message and your usage shows up here.</span></div>
+    <div id="u-body">
+      <div class="usum" id="u-sum"></div>
+      <div class="tiles" id="u-tiles"></div>
+      <section class="sec">
+        <div class="sec-h" style="justify-content:space-between"><b id="u-charttitle">Messages per day</b>
+          <div class="seg" id="u-metric" role="group" aria-label="What the chart shows"><button data-k="messages">Messages</button><button data-k="tokens">Tokens</button></div></div>
+        <div class="muted" id="u-tokhelp" hidden>Tokens are pieces of words. They measure how much text went to the assistant and came back, including files and instructions it read.</div>
+        <div class="legend" id="u-legend"></div>
+        <div class="chart" id="u-chart"></div>
+      </section>
+      <section class="sec">
+        <div class="sec-h"><b>How you used it</b></div>
+        <div id="u-modes"></div>
+      </section>
+      <details class="sec udetails" id="u-modelsec">
+        <summary><b>Details by model</b><span class="muted" id="u-modelcount"></span></summary>
+        <div class="uscroll" id="u-models"></div>
+      </details>
+    </div>
+    <section class="sec" id="u-note">
+      <div class="sec-h"><b>How much of your plan is left?</b></div>
+      <div class="muted">Chatbox can't see your subscription limits. Check them in each service. ChatGPT and Codex show theirs in the ChatGPT app's Settings.</div>
+      <div class="row"><a class="ghost" data-href="https://claude.ai/settings/usage">Claude usage</a><a class="ghost" data-href="https://cursor.com/dashboard">Cursor dashboard</a></div>
+      <div class="muted" id="u-costnote" hidden>The Claude cost is what the same use would cost at API prices. With a Pro or Max subscription you don't pay it per message.</div>
     </section>
-    <section class="sec">
-      <div class="sec-h"><b>By model</b><span class="muted" id="u-modes"></span></div>
-      <div id="u-models"></div>
-    </section>
-    <div class="muted" id="u-note">Chatbox counts only what you send through Chatbox. Your remaining subscription limits aren't available to it — check them in each service:
-      <a data-href="https://claude.ai/settings/usage">Claude usage</a> · <a data-href="https://cursor.com/dashboard">Cursor dashboard</a> · ChatGPT: Settings in the ChatGPT app.
-      Claude's cost is what the same use would cost at API prices; with a Pro/Max subscription you don't pay it per message.</div>
-    <div class="row"><button class="ghost" id="u-clear">Clear statistics</button><span class="muted">Stored only on this computer.</span></div>
+    <div class="row" id="u-clearrow"><button class="ghost danger" id="u-clear">Clear statistics</button><span class="muted">Chats and memories are not affected.</span></div>
   </div>
 </dialog>
 
-<dialog id="set">
+<dialog id="set" class="settings">
   <div class="dlg-h"><h2>Settings</h2><button class="icon" data-close title="Close">✕</button></div>
-  <div class="dlg-b">
-    <section class="sec">
-      <div class="sec-h"><b>Memory</b></div>
-      <div class="muted">Memories are shared with Cursor, Claude, Codex and ChatGPT and sent at the start of each chat.</div>
-      <label class="chk"><input type="checkbox" id="use_memory"> Use memories and custom instructions in chats</label>
-      <label class="chk"><input type="checkbox" id="auto_memory"> Let assistants save new memories when you tell them something worth keeping</label>
-      <div id="vaultopts">
-        <label class="chk"><input type="checkbox" id="memory_in_vault"> Keep memories in Obsidian (<code>Chatbox/Memories.md</code>), editable in Obsidian</label>
-        <label class="chk"><input type="checkbox" id="vault_search"> Give the assistant notes from your vault that relate to your message</label>
-      </div>
-      <div class="muted" id="vaulthint">Tip: connect your Obsidian vault in Accounts to use it as long-term memory.</div>
-      <form class="row" id="memadd"><input class="field" id="memtext" style="flex:1;min-width:200px" placeholder="Add a memory, e.g. “I use Unity 6 and C#”" maxlength="500"><button class="btn">Add</button></form>
-      <div id="memlist"></div>
-      <div class="row" style="justify-content:space-between"><code class="path" id="mempath"></code><button class="ghost" id="memclear">Delete all</button></div>
-    </section>
-    <section class="sec" id="notesec">
-      <div class="sec-h"><b id="notescardtitle">Notes storage</b></div>
-      <div class="muted">Chats and memories are plain Markdown. Sign-ins stay on this computer.</div>
-      <div class="notecard" id="card-obsidian">
-        <label class="notecard-h"><input type="radio" name="notes" value="obsidian"> <b>Obsidian vault</b> <span class="pill ok">Recommended</span></label>
-        <div class="notecard-body" id="obsidianopts" hidden>
-          <form id="vaultpick" class="row">
-            <input class="field" id="vaultpickpath" placeholder="No vault chosen" style="flex:1;min-width:160px">
-            <button class="ghost" type="button" id="choosevault">Change…</button>
-            <button class="ghost" type="submit" id="vaultsave">Save</button>
+  <div class="set-wrap">
+    <nav class="set-nav" role="tablist" aria-label="Settings sections">
+      <button type="button" role="tab" data-tab="memory" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a6 6 0 0 0-4 10.5V16h8v-2.5A6 6 0 0 0 12 3z"/><path d="M9 20h6"/></svg><span>Memory</span></button>
+      <button type="button" role="tab" data-tab="notes" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6"/></svg><span>Notes</span></button>
+      <button type="button" role="tab" data-tab="instructions" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span>Instructions</span></button>
+      <button type="button" role="tab" data-tab="updates" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></svg><span>Updates</span></button>
+    </nav>
+    <div class="set-panes">
+      <section class="pane" data-pane="memory" role="tabpanel">
+        <div class="pane-h"><h3>Memory</h3>
+          <p class="muted">Things every assistant should know about you. Save a fact once and Cursor, Claude, Codex, ChatGPT and Ollama all get it.</p></div>
+        <div class="optgroup">
+          <label class="opt"><span class="opt-t"><b>Use memory in chats</b><span class="muted">Your memories and custom instructions are sent at the start of each chat.</span></span><input class="sw" type="checkbox" id="use_memory"></label>
+          <label class="opt"><span class="opt-t"><b>Let assistants add memories</b><span class="muted">When you tell an assistant something worth keeping, it saves it here. You can undo it.</span></span><input class="sw" type="checkbox" id="auto_memory"></label>
+        </div>
+        <div class="pane-sub"><b>Your memories</b><span class="muted" id="memtotal"></span></div>
+        <form class="row" id="memadd"><input class="field" id="memtext" style="flex:1;min-width:200px" placeholder="Add a memory, e.g. “I use Unity 6 and C#”" maxlength="500"><button class="btn">Add</button></form>
+        <div id="memlist"></div>
+        <div class="row" style="justify-content:space-between"><code class="path" id="mempath"></code><button class="ghost danger" id="memclear">Delete all</button></div>
+        <p class="tip">Tip: type <code>/remember</code> and some text in the message box, or use “Remember” under any message.</p>
+      </section>
+
+      <section class="pane" data-pane="notes" role="tabpanel" id="notesec" hidden>
+        <div class="pane-h"><h3 id="notescardtitle">Notes storage</h3>
+          <p class="muted">Where Chatbox keeps your chats and memories. They are plain text files you can open in any app. Sign-ins stay on this computer.</p></div>
+        <div id="notesstatus" class="notesstatus" role="status" aria-live="polite"></div>
+        <div class="notecard" id="card-obsidian">
+          <label class="notecard-h"><input type="radio" name="notes" value="obsidian"> <span class="opt-t"><span><b>Obsidian vault</b> <span class="pill ok">Recommended</span></span><span class="muted">Notes go into a vault you can read and edit in Obsidian.</span></span></label>
+          <div class="notecard-body" id="obsidianopts" hidden>
+            <span class="lbl">Vault folder</span>
+            <form id="vaultpick" class="row">
+              <input class="field" id="vaultpickpath" placeholder="No vault chosen" aria-label="Vault folder" style="flex:1;min-width:160px">
+              <button class="ghost" type="button" id="choosevault">Change…</button>
+              <button class="ghost" type="submit" id="vaultsave">Save</button>
+            </form>
             <span id="vaultmsg" class="vaultmsg" role="status" aria-live="polite"></span>
-          </form>
-          <a id="obsdownload" data-href="https://obsidian.md/download" hidden>Download Obsidian</a>
-          <div class="row"><button class="ghost" type="button" id="disconnectnotes" hidden>Disconnect</button></div>
-        </div>
-      </div>
-      <div class="notecard" id="card-chatbox">
-        <label class="notecard-h"><input type="radio" name="notes" value="chatbox"> <b>Inside Chatbox</b></label>
-        <div class="notecard-body" id="chatboxopts" hidden>
-          <div class="row">
-            <code class="path" id="noteslocalpath" style="flex:1"></code>
-            <button class="ghost" type="button" id="opennotes">Open folder</button>
-            <button class="ghost" type="button" id="openobsidian" hidden>Open in Obsidian</button>
+            <a id="obsdownload" data-href="https://obsidian.md/download" hidden>Download Obsidian</a>
+            <div class="row"><button class="ghost" type="button" id="disconnectnotes" hidden>Disconnect</button></div>
           </div>
-          <div class="muted" id="noteslocalhint">Open in Obsidian later. The folder is plain Markdown.</div>
         </div>
-      </div>
-      <div class="notecard" id="card-off">
-        <label class="notecard-h"><input type="radio" name="notes" value="off"> <b>Off</b></label>
-      </div>
-      <details class="advanced" id="notesadvanced" hidden>
-        <summary>Advanced</summary>
-        <form class="row" id="syncform"><span class="muted">Sync folder</span><input class="field" id="sync_folder" placeholder="Chatbox" style="flex:1;min-width:160px"><button class="ghost" type="submit">Save</button></form>
-      </details>
-      <div id="notesstatus" class="notesstatus"></div>
-    </section>
-    <section class="sec">
-      <div class="sec-h"><b>Custom instructions</b></div>
-      <div class="muted">What every assistant should know about you, or how it should reply.</div>
-      <textarea class="field" id="instructions" rows="4" maxlength="4000" placeholder="e.g. Reply in Russian. Keep answers short. Explain code step by step."></textarea>
-      <div class="row"><button class="btn" id="instsave">Save</button><span class="muted" id="instmsg"></span></div>
-    </section>
-    <section class="sec">
-      <div class="sec-h"><b>Updates</b></div>
-      <div class="muted">Chatbox looks for a new version when it starts and about every 6 hours. An update only fast-forwards your own clone, then runs install.sh again. Chats, accounts and settings stay put.</div>
-      <div class="row">
-        <label class="chk"><input type="checkbox" id="auto_update" checked> Check for updates</label>
-        <button class="ghost" type="button" id="checknow">Check for updates now</button>
-      </div>
-      <div class="row">
-        <span id="checkmsg" class="muted"></span>
-        <button class="btn" type="button" id="setupdatenow" hidden>Update now</button>
-      </div>
-      <label class="chk"><input type="checkbox" id="auto_install_updates"> Install updates automatically</label>
-    </section>
-    <section class="sec" id="aboutline" hidden>
-      <div class="sec-h"><b>About</b></div>
-      <div class="muted">This copy is <a class="appver" id="aboutver"></a>.</div>
-    </section>
-    <p class="muted" style="margin:0">Tip: type <code>/remember</code> and some text in the message box to save a memory, or use “Remember” under any message.</p>
+        <div class="notecard" id="card-chatbox">
+          <label class="notecard-h"><input type="radio" name="notes" value="chatbox"> <span class="opt-t"><b>Inside Chatbox</b><span class="muted">Chatbox keeps the notes in its own folder. No other app needed.</span></span></label>
+          <div class="notecard-body" id="chatboxopts" hidden>
+            <span class="lbl">Notes folder</span>
+            <div class="row">
+              <code class="path" id="noteslocalpath" style="flex:1"></code>
+              <button class="ghost" type="button" id="opennotes">Open folder</button>
+              <button class="ghost" type="button" id="openobsidian" hidden>Open in Obsidian</button>
+            </div>
+            <div class="muted" id="noteslocalhint">Open in Obsidian later. The folder is plain Markdown.</div>
+          </div>
+        </div>
+        <div class="notecard" id="card-off">
+          <label class="notecard-h"><input type="radio" name="notes" value="off"> <span class="opt-t"><b>Off</b><span class="muted">Chats stay in the sidebar only. Nothing is written as notes.</span></span></label>
+        </div>
+        <details class="advanced" id="notesadvanced" hidden>
+          <summary>Advanced</summary>
+          <form class="row" id="syncform"><span class="muted">Folder for Chatbox notes</span><input class="field" id="sync_folder" placeholder="Chatbox" style="flex:1;min-width:160px"><button class="ghost" type="submit">Save</button></form>
+        </details>
+        <div class="pane-sub"><b>Use your notes</b></div>
+        <div class="optgroup" id="vaultopts">
+          <label class="opt"><span class="opt-t"><b>Keep memories as a note</b><span class="muted">Memories are stored in a <code>Memories.md</code> note, so you can edit them in Obsidian too.</span></span><input class="sw" type="checkbox" id="memory_in_vault"></label>
+          <label class="opt"><span class="opt-t"><b>Let assistants read related notes</b><span class="muted">Notes that match your message are sent along with it.</span></span><input class="sw" type="checkbox" id="vault_search"></label>
+        </div>
+        <div class="muted" id="vaulthint">Choose where to keep notes above to use them as long-term memory.</div>
+      </section>
+
+      <section class="pane" data-pane="instructions" role="tabpanel" hidden>
+        <div class="pane-h"><h3>Custom instructions</h3>
+          <p class="muted">What every assistant should know about you, or how it should reply. New chats use it.</p></div>
+        <textarea class="field" id="instructions" rows="9" maxlength="4000" placeholder="e.g. Reply in Russian. Keep answers short. Explain code step by step."></textarea>
+        <div class="row"><button class="btn" id="instsave">Save</button><span class="muted" id="instmsg" role="status" aria-live="polite"></span></div>
+      </section>
+
+      <section class="pane" data-pane="updates" role="tabpanel" hidden>
+        <div class="pane-h"><h3>Updates</h3>
+          <p class="muted">Updating keeps your chats, accounts and settings.</p></div>
+        <div class="optgroup">
+          <label class="opt"><span class="opt-t"><b>Check for updates</b><span class="muted">Chatbox looks for a new version when it starts and about every 6 hours.</span></span><input class="sw" type="checkbox" id="auto_update" checked></label>
+          <label class="opt"><span class="opt-t"><b>Install updates automatically</b><span class="muted">New versions are installed without asking.</span></span><input class="sw" type="checkbox" id="auto_install_updates"></label>
+        </div>
+        <div class="row">
+          <button class="ghost" type="button" id="checknow">Check for updates now</button>
+          <button class="btn" type="button" id="setupdatenow" hidden>Update now</button>
+        </div>
+        <div id="checkmsg" class="muted" role="status" aria-live="polite"></div>
+        <div id="aboutline" hidden>
+          <div class="pane-sub"><b>About</b></div>
+          <div class="muted">This copy is <a class="appver" id="aboutver"></a>.</div>
+        </div>
+      </section>
+    </div>
   </div>
 </dialog>
 
 <dialog id="acc">
   <div class="dlg-h"><h2>Accounts</h2><button class="icon" data-close title="Close">✕</button></div>
   <div class="dlg-b">
-    <p class="intro">Chatbox uses your own subscriptions. Install each tool once and sign in — sign-in happens in your browser, and Chatbox never sees your password. ChatGPT is separate from Codex: Continue with ChatGPT uses your ChatGPT plan (no API key). Ollama runs models on your own computer and needs no account.</p>
+    <p class="intro">Chatbox uses your own subscriptions. You sign in once in your browser, and Chatbox never sees your password.</p>
+    <p id="accsummary" class="acct-sum" role="status"></p>
     <div id="acclist" style="display:flex;flex-direction:column;gap:12px"><p class="muted">Checking accounts…</p></div>
-    <p class="muted">Notes and the Obsidian vault are in Settings.</p>
+    <p class="muted">Looking for notes or your Obsidian vault? <a id="acc2notes" href="#">Open Notes settings</a></p>
+  </div>
+</dialog>
+
+<dialog id="dbrowse" aria-labelledby="browsetitle">
+  <div class="dlg-h"><h2 id="browsetitle">Choose a folder</h2><button class="icon" type="button" data-browsecancel title="Close">✕</button></div>
+  <div class="dlg-b">
+    <div class="row brow-top">
+      <button class="ghost" type="button" id="browseup" title="Go up one folder">↑ Up</button>
+      <button class="ghost" type="button" id="browsehome" title="Go to your home folder">Home</button>
+      <code class="path" id="browsepath" style="flex:1"></code>
+    </div>
+    <div class="browselist" id="browselist" role="listbox" aria-label="Folders"></div>
+    <div class="muted" id="browsemsg" role="status" aria-live="polite"></div>
+    <div class="row" style="justify-content:flex-end"><button class="ghost" type="button" data-browsecancel>Cancel</button><button class="btn" type="button" id="browseuse">Use this folder</button></div>
   </div>
 </dialog>
 

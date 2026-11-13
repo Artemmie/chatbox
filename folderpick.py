@@ -171,7 +171,8 @@ def _linux(initial, timeout, which=None, run=None):
     tk = _tk(initial, timeout, run)
     if tk is not None:
         return _public(tk)
-    return {"path": "", "cancelled": False,
+    # browse: the page can show its own folder list instead (see browse()).
+    return {"path": "", "cancelled": False, "browse": True,
             "error": "Couldn't open a folder picker. Type the folder path and click Save."}
 
 
@@ -220,3 +221,48 @@ def _powershell(initial, timeout, run=None):
         return {"path": "", "cancelled": False,
                 "error": "Couldn't open a folder picker. Type the folder path and click Save."}
     return _public(result)
+
+
+BROWSE_LIMIT = 500
+
+
+def browse(path=""):
+    """List the folders inside path, for the page's own folder list.
+
+    Used when no native dialog can be opened (a browser tab on a system without
+    zenity, kdialog or tkinter). Hidden folders are left out. A folder that holds
+    an .obsidian folder is marked as a vault.
+    """
+    raw = os.path.expanduser(str(path or "").strip()) or os.path.expanduser("~")
+    here = os.path.abspath(raw)
+    while here and not os.path.isdir(here):
+        up = os.path.dirname(here)
+        if up == here:
+            break
+        here = up
+    if not os.path.isdir(here):
+        here = os.path.expanduser("~")
+    folders, error = [], ""
+    try:
+        with os.scandir(here) as entries:
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError:
+                    continue
+                folders.append({"name": entry.name,
+                                "vault": os.path.isdir(os.path.join(entry.path, ".obsidian"))})
+    except OSError:
+        error = "Chatbox can't open this folder."
+    folders.sort(key=lambda f: f["name"].lower())
+    parent = os.path.dirname(here)
+    result = {"path": here, "parent": parent if parent != here else "",
+              "home": os.path.expanduser("~"), "sep": os.sep,
+              "vault": os.path.isdir(os.path.join(here, ".obsidian")),
+              "folders": folders[:BROWSE_LIMIT], "more": max(0, len(folders) - BROWSE_LIMIT)}
+    if error:
+        result["error"] = error
+    return result

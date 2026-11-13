@@ -265,6 +265,33 @@ class PickFolderTests(unittest.TestCase):
         finally:
             folderpick.pick = original
 
+    def test_browse_lists_folders_and_marks_vaults(self):
+        root = os.path.join(self.tmp, "browse")
+        os.makedirs(os.path.join(root, "Main vault", ".obsidian"))
+        os.makedirs(os.path.join(root, "art"))
+        os.makedirs(os.path.join(root, ".hidden"))
+        open(os.path.join(root, "file.txt"), "w").close()
+        code, raw = request(self.srv, "/api/browse-folder", {"path": root})
+        self.assertEqual(code, 200)
+        body = json.loads(raw)
+        self.assertEqual(body["path"], root)
+        self.assertEqual(body["parent"], self.tmp)
+        self.assertEqual(body["folders"], [{"name": "art", "vault": False},
+                                           {"name": "Main vault", "vault": True}])
+        self.assertFalse(body["vault"])
+        inside = folderpick.browse(os.path.join(root, "Main vault"))
+        self.assertTrue(inside["vault"])
+        # a path that does not exist opens the nearest folder that does
+        missing = folderpick.browse(os.path.join(root, "nope", "deeper"))
+        self.assertEqual(missing["path"], root)
+        self.assertTrue(os.path.isdir(folderpick.browse("")["path"]))
+
+    def test_no_native_dialog_tells_the_page_to_browse(self):
+        result = folderpick._linux("", 1, which=lambda name: None,
+                                   run=lambda *a, **k: type("P", (), {"returncode": 2, "stdout": "", "stderr": ""})())
+        self.assertTrue(result.get("browse"))
+        self.assertIn("folder picker", result["error"])
+
     def test_bridge_is_preferred_and_a_timeout_is_reported(self):
         seen = {}
 
