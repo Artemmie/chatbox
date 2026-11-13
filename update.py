@@ -100,6 +100,59 @@ def bundled_version():
         return ""
 
 
+def _plain_version(text):
+    text = str(text or "").strip()
+    if text[:1] in ("v", "V"):
+        text = text[1:].strip()
+    return text
+
+
+def app_version():
+    """The version this copy reports, without a leading v.
+
+    A packaged build reads version.txt. A checkout reads VERSION.
+    """
+    text = bundled_version()
+    if not text:
+        path = os.path.join(runtime.source_root(), "VERSION")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            text = ""
+    return _plain_version(text)
+
+
+def version_label(number=None):
+    """'v1.1.1', or '' when this copy has no version."""
+    if number is None:
+        number = app_version()
+    number = _plain_version(number)
+    return ("v" + number) if number else ""
+
+
+def release_url(number=None):
+    """The GitHub release page for this version, or the releases list when it is unknown."""
+    label = version_label(number if number is not None else app_version())
+    if not label:
+        return RELEASE_PAGE
+    return RELEASE_PAGE + "/tag/" + label
+
+
+def version_info():
+    """Label and release page for the API and the window."""
+    number = app_version()
+    return {"version": version_label(number), "url": release_url(number)}
+
+
+def window_title(label=None):
+    """Desktop window title, for example 'Chatbox v1.1.1'."""
+    if label is None:
+        label = version_label()
+    label = (label or "").strip()
+    return "Chatbox " + label if label else "Chatbox"
+
+
 class UpdateError(Exception):
     pass
 
