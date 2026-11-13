@@ -783,9 +783,18 @@ class Vault:
             lines.append("project: " + json.dumps(name, ensure_ascii=False))
         lines += ["---", "", f"# {title}", f"Back to {link}", "", f"Part of {link}", "",
                   f"Saved from Chatbox on {now:%Y-%m-%d %H:%M}" + (f" · {backend}" if backend else ""), ""]
+
+        def who_of(message):
+            who = message.get("who")
+            if isinstance(who, str) and who.strip():
+                return who.strip()
+            if message.get("role") == "you":
+                return "You"
+            return {"cursor": "Cursor", "claude": "Claude", "codex": "Codex",
+                    "chatgpt": "ChatGPT", "ollama": "Ollama"}.get(message.get("b") or "", "Assistant")
+
         for message in messages:
-            who = message.get("who") or ("You" if message.get("role") == "you" else "Assistant")
-            lines += [f"**{who}:**", "", message.get("text", "").strip(), ""]
+            lines += [f"**{who_of(message)}:**", "", message.get("text", "").strip(), ""]
         _atomic(full, "\n".join(lines))
         try:
             import sync as syncmod
