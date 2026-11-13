@@ -754,10 +754,12 @@ def settings_payload():
         place = MEMORY.notes_status()
     except Exception:
         place = {"line": "", "fallback": False}
+    card = MEMORY.notes_card(v.info() if v else None, installed)
     notes = {"mode": mode, "local_path": MEMORY.local_vault_dir(),
              "installed": installed, "download": vaultmod.OBSIDIAN_DOWNLOAD,
              "banner": mode == "chatbox" and not installed,
-             "status": place.get("line") or "", "fallback": bool(place.get("fallback"))}
+             "status": place.get("line") or "", "fallback": bool(place.get("fallback")),
+             "card": card}
     return {"settings": settings, "memories": MEMORY.memories(), "path": where,
             "vault": v.info() if v else None, "detected": vaultmod.detect_vaults(),
             "sync": syncmod.describe(MEMORY), "projects": projects, "obsidian_app": notice,
@@ -915,7 +917,8 @@ class Handler(BaseHTTPRequestHandler):
                         rel = v.save_chat(req.get("messages") or [], req.get("backend", ""),
                                           workdir=req.get("workdir") or "",
                                           project=req.get("project") or "",
-                                          locked=bool(req.get("project_lock")))
+                                          locked=bool(req.get("project_lock")),
+                                          chat_id=req.get("id") or "")
                         return self._send(200, json.dumps({"saved": rel, **settings_payload()}))
                     else:
                         raise ValueError("Unknown action")
@@ -944,6 +947,11 @@ class Handler(BaseHTTPRequestHandler):
                     folder = MEMORY.local_vault_dir()
                     os.makedirs(folder, exist_ok=True)
                     accounts.open_path(folder)
+                    return self._send(200, json.dumps({"ok": True, "path": folder, **settings_payload()}))
+                if req.get("action") == "obsidian":
+                    folder = MEMORY.local_vault_dir()
+                    os.makedirs(folder, exist_ok=True)
+                    accounts.open_in_obsidian(folder)
                     return self._send(200, json.dumps({"ok": True, "path": folder, **settings_payload()}))
                 result = MEMORY.set_notes_storage(req.get("mode") or "off", req.get("path") or "",
                                                   copy=bool(req.get("copy")))
@@ -1005,6 +1013,8 @@ class Handler(BaseHTTPRequestHandler):
             action = req.get("action") or "check"
             if action == "apply":
                 return self._send(200, json.dumps(updatemod.request_apply()))
+            if action == "now":
+                return self._send(200, json.dumps(updatemod.check_now()))
             if action == "check":
                 return self._send(200, json.dumps(updatemod.consider(auto=False)))
             return self._send(200, json.dumps({"error": "Unknown action"}))

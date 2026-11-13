@@ -25,6 +25,7 @@ TAGS_URL = f"https://api.github.com/repos/{REPO}/tags"
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASE_PAGE = f"https://github.com/{REPO}/releases"
 CHECK_EVERY = 6 * 60 * 60
+START_CHECK_AFTER = 60 * 60  # startup checks again once the last one is an hour old
 _BOX_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 _lock = threading.Lock()
@@ -516,6 +517,59 @@ def _schedule(cmd):
     threading.Thread(target=go, daemon=False).start()
 
 
+def _stamp_path(data_dir):
+    if not data_dir:
+        return ""
+    return os.path.join(data_dir, "update-check.json")
+
+
+def read_checked_at(data_dir):
+    """When this computer last finished an update check, or 0."""
+    path = _stamp_path(data_dir)
+    if not path:
+        return 0
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return float(data.get("checked_at") or 0)
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def write_checked_at(data_dir, when):
+    path = _stamp_path(data_dir)
+    if not path:
+        return
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump({"checked_at": when}, handle)
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+
+def should_check_on_startup(checked_at, now=None):
+    """True when this launch should look for an update. A check under an hour old waits."""
+    now = time.time() if now is None else now
+    checked_at = float(checked_at or 0)
+    if checked_at <= 0:
+        return True
+    return (now - checked_at) >= START_CHECK_AFTER
+
+
+def summary_line(view, version=""):
+    """What Settings shows after a check. A failed check is not called the latest."""
+    if view.get("available"):
+        return view.get("message") or "Update available"
+    message = (view.get("message") or "").strip()
+    if message:
+        return message
+    label = version or version_label() or "this version"
+    return f"You're on {label} (latest)"
+
+
 def snapshot():
     with _lock:
         data = _public(STATE)
@@ -527,30 +581,41 @@ def snapshot():
     return data
 
 
-def consider(auto=False):
-    """One check. When auto-install is on and the clone can fast-forward, apply it."""
+def consider(auto=False, force=False, wait=False):
+    """One check. When auto-install is on and the clone can fast-forward, apply it.
+
+    force ignores the Settings checkbox so Check for updates now still runs.
+    The six-hour gap is not applied here; callers that want it use snapshot or the loop.
+    """
     if not _ctx:
         return snapshot()
-    if not _run_lock.acquire(blocking=False):
+    if wait:
+        got = _run_lock.acquire(blocking=True, timeout=60)
+    else:
+        got = _run_lock.acquire(blocking=False)
+    if not got:
         with _lock:
-            return _public(STATE)
+            view = _public(STATE)
+        view["checking"] = True
+        return view
     try:
-        return _consider(auto)
+        return _consider(auto, force=force)
     finally:
         _run_lock.release()
 
 
-def _consider(auto):
+def _consider(auto, force=False):
     try:
         settings = _ctx["settings"]() or {}
     except Exception:
         settings = {"auto_update": True}
+    enabled = bool(settings.get("auto_update", True))
     with _lock:
-        if not settings.get("auto_update", True):
+        if not enabled and not force:
             STATE.update(enabled=False, available=False, can_apply=False, checking=False, message="")
             return _public(STATE)
         STATE["checking"] = True
-        STATE["enabled"] = True
+        STATE["enabled"] = enabled
     try:
         found = check(_ctx["data_dir"], _ctx["here"], fetch=True)
     except Exception:
@@ -561,11 +626,32 @@ def _consider(auto):
                 STATE[key] = found[key]
         STATE["checking"] = False
         STATE["checked_at"] = time.time()
-        STATE["enabled"] = True
+        STATE["enabled"] = enabled
+        when = STATE["checked_at"]
+        data_dir = _ctx.get("data_dir")
         view = _public(STATE)
-    if auto and settings.get("auto_install_updates") and found.get("can_apply") and not _ctx["busy"]():
+    write_checked_at(data_dir, when)
+    if auto and enabled and settings.get("auto_install_updates") and found.get("can_apply") and not _ctx["busy"]():
         port = _ctx["port"]()
         apply(_ctx["data_dir"], _ctx["here"], port=port)
+    return view
+
+
+def check_now():
+    """One check immediately. CHECK_EVERY does not apply, even if the last check was recent."""
+    if not _ctx:
+        view = dict(_public(STATE))
+        view["error"] = "Updates are not running."
+        view["summary"] = view["error"]
+        view["version"] = version_label()
+        return view
+    view = dict(consider(auto=False, force=True, wait=True))
+    label = version_label()
+    view["version"] = label
+    if view.get("checking"):
+        view["summary"] = "Checking…"
+    else:
+        view["summary"] = summary_line(view, label)
     return view
 
 
@@ -580,8 +666,18 @@ def request_apply():
     return apply(_ctx["data_dir"], _ctx["here"], port=_ctx["port"]())
 
 
+def _startup_tick(first):
+    """The background loop's first pass checks only when the last one is over an hour old."""
+    if first:
+        with _lock:
+            last = float(STATE.get("checked_at") or 0)
+        if not should_check_on_startup(last):
+            return
+    consider(auto=True)
+
+
 def start(data_dir, here, settings, busy, port):
-    """Check once now, then about every six hours. Safe to call once from startup."""
+    """Check on launch when the last check is over an hour old, then about every six hours."""
     global _started
     with _lock:
         _ctx["data_dir"] = data_dir
@@ -589,16 +685,21 @@ def start(data_dir, here, settings, busy, port):
         _ctx["settings"] = settings
         _ctx["busy"] = busy
         _ctx["port"] = port
+        last = read_checked_at(data_dir)
+        if last and not STATE.get("checked_at"):
+            STATE["checked_at"] = last
         if _started:
             return
         _started = True
 
     def loop():
+        first = True
         while True:
             try:
-                consider(auto=True)
+                _startup_tick(first)
             except Exception:
                 pass
+            first = False
             time.sleep(CHECK_EVERY)
 
     threading.Thread(target=loop, name="chatbox-update", daemon=True).start()

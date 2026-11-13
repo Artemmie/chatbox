@@ -51,6 +51,16 @@ REMEMBER = re.compile(r"^[ \t>*_-]*REMEMBER:\s*(.+?)\s*$", re.MULTILINE)
 NOTES_MODES = ("obsidian", "chatbox", "off")
 
 
+def manual_save_visible(sync_chats, notes_mode, has_folder):
+    """Header Save button. Hidden while auto-sync is writing notes.
+
+    Shown only when auto-sync is off and a notes folder is in use.
+    """
+    if sync_chats:
+        return False
+    return notes_mode in ("obsidian", "chatbox") and bool(has_folder)
+
+
 def copy_notes(src, dest):
     """Copy Markdown from the Chatbox folder into a vault. Skip ids and paths already there."""
     import sync as syncmod
@@ -230,6 +240,44 @@ class Store:
                 line = "No vault chosen. Saving chats to " + where + "."
             return {"line": line, "fallback": True}
         return {"line": "✓ Saving chats to " + self._notes_trail("Chatbox"), "fallback": False}
+
+    def notes_card(self, vault_info, installed):
+        """The one notes card. Chatbox mode is not an Obsidian connection."""
+        try:
+            mode = self.notes_mode()
+            settings = self.settings()
+        except Exception:
+            mode, settings = "off", {}
+        count = int((vault_info or {}).get("notes") or 0)
+        noun = "note" if count == 1 else "notes"
+        sync_on = bool(settings.get("sync_chats"))
+        show_save = manual_save_visible(sync_on, mode, vault_info is not None and mode != "off")
+        if mode == "chatbox":
+            return {"mode": "chatbox",
+                    "title": f"Notes: Inside Chatbox · {count} {noun}",
+                    "path": self.local_vault_dir(),
+                    "count": count,
+                    "open_folder": True,
+                    "open_obsidian": bool(installed),
+                    "disconnect": False,
+                    "show_save": show_save}
+        if mode == "obsidian":
+            path = os.path.expanduser((settings.get("vault_path") or "").strip())
+            connected = bool(path) and vaultmod.is_vault(path)
+            name = os.path.basename(os.path.abspath(path).rstrip("\\/")) if connected else ""
+            title = f"{name} · {count} {noun}" if connected else "Obsidian"
+            return {"mode": "obsidian",
+                    "title": title,
+                    "path": os.path.abspath(path) if connected else "",
+                    "count": count if connected else 0,
+                    "connected": connected,
+                    "open_folder": False,
+                    "open_obsidian": False,
+                    "disconnect": True,
+                    "show_save": show_save}
+        return {"mode": "off", "title": "Notes storage", "path": "", "count": 0,
+                "open_folder": False, "open_obsidian": False, "disconnect": False,
+                "show_save": False}
 
     def _notes_trail(self, head):
         try:

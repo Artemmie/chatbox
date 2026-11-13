@@ -19,9 +19,38 @@ from PyQt6.QtCore import QObject, QUrl, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import QIcon  # noqa: E402
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile  # noqa: E402
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox  # noqa: E402
 
 PORT = 8766  # fixed so saved settings survive restarts; any free port if taken
+
+
+class DialogPage(QWebEnginePage):
+    """Show JavaScript alert, confirm, and prompt.
+
+    A plain QWebEnginePage swallows those dialogs. confirm() then returns false
+    and the button looks dead. The page itself uses an in-app dialog; this is
+    the safety net for any script that still calls the browser ones.
+    """
+
+    def __init__(self, profile, parent=None):
+        super().__init__(profile, parent)
+        self._host = parent
+
+    def javaScriptAlert(self, securityOrigin, msg):
+        QMessageBox.information(self._host, "Chatbox", str(msg or ""))
+
+    def javaScriptConfirm(self, securityOrigin, msg):
+        answer = QMessageBox.question(
+            self._host, "Chatbox", str(msg or ""),
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        return answer == QMessageBox.StandardButton.Ok
+
+    def javaScriptPrompt(self, securityOrigin, msg, defaultValue):
+        # QMessageBox cannot collect typed text. The prompt uses a one-line dialog.
+        text, ok = QInputDialog.getText(
+            self._host, "Chatbox", str(msg or ""), text=str(defaultValue or ""))
+        return bool(ok), text
 
 
 class Window(QWebEngineView):
@@ -113,7 +142,7 @@ def main():
     profile.setCachePath(os.path.join(chatbox.DATA_DIR, "profile", "cache"))
 
     view = Window()
-    view.setPage(QWebEnginePage(profile, view))
+    view.setPage(DialogPage(profile, view))
     view.setWindowTitle(chatbox.updatemod.window_title())
     view.resize(1000, 760)
     view.load(QUrl(f"http://127.0.0.1:{srv.server_address[1]}/"))

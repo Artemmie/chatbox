@@ -363,5 +363,127 @@ class PickFolderTests(unittest.TestCase):
         self.assertEqual(body["settings"]["vault_path"], os.path.abspath(saved))
 
 
+class NotesCardTests(unittest.TestCase):
+    def setUp(self):
+        self._installed = vault.obsidian_installed
+        vault.obsidian_installed = lambda *args, **kwargs: False
+        self.box, self.data = isolate()
+
+    def tearDown(self):
+        vault.obsidian_installed = self._installed
+
+    def test_chatbox_mode_is_not_shown_as_an_obsidian_vault(self):
+        self.box.MEMORY.update_settings({"notes_storage": "chatbox", "vault_path": "", "sync_chats": True})
+        payload = self.box.settings_payload()
+        card = payload["notes"]["card"]
+        noun = "note" if card["count"] == 1 else "notes"
+        self.assertEqual(card["title"], f"Notes: Inside Chatbox · {card['count']} {noun}")
+        self.assertGreater(card["count"], 0)
+        self.assertFalse(card["disconnect"])
+        self.assertTrue(card["open_folder"])
+        self.assertFalse(card["open_obsidian"])
+        self.assertFalse(card["show_save"])
+        self.assertNotIn("Connected", card["title"])
+        self.assertEqual(os.path.realpath(card["path"]), os.path.realpath(os.path.join(self.data, "vault")))
+        self.assertEqual(payload["settings"]["vault_path"], "")
+
+    def test_save_button_shows_only_when_auto_sync_is_off(self):
+        self.box.MEMORY.update_settings({"notes_storage": "chatbox", "sync_chats": True})
+        self.assertFalse(self.box.settings_payload()["notes"]["card"]["show_save"])
+        self.box.MEMORY.update_settings({"sync_chats": False}, _prepare=False)
+        card = self.box.settings_payload()["notes"]["card"]
+        self.assertTrue(card["show_save"])
+        self.assertTrue(card["title"].startswith("Notes: Inside Chatbox"))
+        self.box.MEMORY.set_notes_storage("off")
+        self.assertFalse(self.box.settings_payload()["notes"]["card"]["show_save"])
+
+    def test_obsidian_card_names_the_vault(self):
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, True)
+        vault_dir = os.path.join(parent, "Main vault")
+        os.makedirs(vault_dir)
+        self.box.MEMORY.set_notes_storage("obsidian", vault_dir)
+        card = self.box.settings_payload()["notes"]["card"]
+        self.assertTrue(card["title"].startswith("Main vault · "))
+        self.assertTrue(card["disconnect"])
+        self.assertFalse(card["show_save"])
+        self.assertEqual(os.path.realpath(card["path"]), os.path.realpath(vault_dir))
+        self.assertFalse(card["title"].startswith("Notes: Inside Chatbox"))
+
+    def test_open_in_obsidian_follows_the_install_check(self):
+        self.box.MEMORY.update_settings({"notes_storage": "chatbox", "sync_chats": True})
+        self.assertFalse(self.box.settings_payload()["notes"]["card"]["open_obsidian"])
+        vault.obsidian_installed = lambda *args, **kwargs: True
+        self.assertTrue(self.box.settings_payload()["notes"]["card"]["open_obsidian"])
+
+    def test_manual_save_updates_the_same_note(self):
+        import sync
+        self.box.MEMORY.set_notes_storage("chatbox")
+        self.box.MEMORY.update_settings({"sync_chats": False}, _prepare=False)
+        notes = self.box.MEMORY.vault()
+        cid = "abc123abc123"
+        first = [{"role": "you", "who": "You", "text": "Where should the shelter go?"}]
+        rel1 = notes.save_chat(first, "Claude", chat_id=cid)
+        second = first + [{"role": "bot", "who": "Claude", "text": "On the ridge."}]
+        rel2 = notes.save_chat(second, "Claude", chat_id=cid)
+        self.assertEqual(rel1, rel2)
+        found = sync.find_chat_notes(notes.path).get(cid) or []
+        self.assertEqual(len(found), 1)
+        with open(found[0], encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("On the ridge.", text)
+        self.assertIn(cid, text)
+        self.assertNotIn("(2)", os.path.basename(found[0]))
+        again = notes.save_chat(second + [{"role": "you", "who": "You", "text": "And the sensor?"}],
+                                "Claude", chat_id=cid)
+        self.assertEqual(again, rel1)
+        self.assertEqual(len(sync.find_chat_notes(notes.path).get(cid) or []), 1)
+
+    def test_save_endpoint_does_not_create_a_second_note(self):
+        import sync
+        self.box.MEMORY.set_notes_storage("chatbox")
+        self.box.MEMORY.update_settings({"sync_chats": False}, _prepare=False)
+        srv = serve(self.box)
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        body = {"action": "save_chat", "id": "abc123abc123", "backend": "Claude",
+                "messages": [{"role": "you", "who": "You", "text": "First draft"}]}
+        code, raw = request(srv, "/api/obsidian", body)
+        self.assertEqual(code, 200)
+        saved = json.loads(raw)["saved"]
+        body["messages"] = body["messages"] + [{"role": "bot", "who": "Claude", "text": "Revised"}]
+        code, raw = request(srv, "/api/obsidian", body)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(raw)["saved"], saved)
+        notes = self.box.MEMORY.vault()
+        found = sync.find_chat_notes(notes.path).get("abc123abc123") or []
+        self.assertEqual(len(found), 1)
+        with open(found[0], encoding="utf-8") as handle:
+            self.assertIn("Revised", handle.read())
+
+    def test_disconnect_choice_switches_storage_immediately(self):
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, True)
+        vault_dir = os.path.join(parent, "Main vault")
+        os.makedirs(vault_dir)
+        self.box.MEMORY.set_notes_storage("obsidian", vault_dir)
+        srv = serve(self.box)
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        code, raw = request(srv, "/api/notes", {"mode": "chatbox"})
+        self.assertEqual(code, 200)
+        card = json.loads(raw)["notes"]["card"]
+        self.assertTrue(card["title"].startswith("Notes: Inside Chatbox"))
+        self.assertFalse(card["disconnect"])
+        self.assertEqual(self.box.MEMORY.notes_mode(), "chatbox")
+        self.box.MEMORY.set_notes_storage("obsidian", vault_dir)
+        code, raw = request(srv, "/api/notes", {"mode": "off"})
+        body = json.loads(raw)
+        self.assertEqual(body["notes"]["mode"], "off")
+        self.assertFalse(body["notes"]["card"]["disconnect"])
+        self.assertFalse(body["notes"]["card"]["show_save"])
+        self.assertEqual(body["settings"]["notes_storage"], "off")
+
+
 if __name__ == "__main__":
     unittest.main()
