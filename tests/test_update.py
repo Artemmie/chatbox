@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -181,6 +182,96 @@ class GitUpdateTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertFalse(view["enabled"])
         self.assertFalse(view["available"])
+
+    def test_startup_checks_only_after_an_hour(self):
+        now = 10000
+        self.assertTrue(update.should_check_on_startup(0, now=now))
+        self.assertFalse(update.should_check_on_startup(now - 3599, now=now))
+        self.assertTrue(update.should_check_on_startup(now - 3600, now=now))
+        self.assertEqual(update.START_CHECK_AFTER, 60 * 60)
+        self.assertGreater(update.CHECK_EVERY, update.START_CHECK_AFTER)
+
+    def test_check_now_ignores_the_six_hour_gap(self):
+        calls = []
+        update._ctx.update(data_dir=self.data, here=self.src,
+                           settings=lambda: {"auto_update": True, "auto_install_updates": False},
+                           busy=lambda: False, port=lambda: None)
+        update.STATE["checked_at"] = time.time()
+        original = update.check
+
+        def fake(*_args, **_kwargs):
+            calls.append("check")
+            return {"available": False, "can_apply": False, "current": "", "latest": "",
+                    "message": "", "kind": "git", "url": ""}
+
+        update.check = fake
+        self.addCleanup(setattr, update, "check", original)
+        view = update.check_now()
+        self.assertEqual(calls, ["check"])
+        self.assertTrue(view["summary"].startswith("You're on v"))
+        self.assertIn("(latest)", view["summary"])
+        self.assertFalse(view["available"])
+        update.snapshot()
+        self.assertEqual(calls, ["check"])
+        failed = update.summary_line({"available": False, "message": "Could not check for an update."})
+        self.assertEqual(failed, "Could not check for an update.")
+        self.assertNotIn("latest", failed)
+
+    def test_check_now_runs_when_automatic_checks_are_off(self):
+        calls = []
+        update._ctx.update(data_dir=self.data, here=self.src,
+                           settings=lambda: {"auto_update": False},
+                           busy=lambda: False, port=lambda: None)
+        original = update.check
+        update.check = lambda *_a, **_k: calls.append(1) or {
+            "available": True, "can_apply": False, "message": "A newer Chatbox is published.",
+            "kind": "git", "url": "", "current": "", "latest": "v9",
+        }
+        self.addCleanup(setattr, update, "check", original)
+        view = update.check_now()
+        self.assertEqual(calls, [1])
+        self.assertTrue(view["available"])
+        self.assertEqual(view["summary"], "A newer Chatbox is published.")
+        self.assertNotIn("latest", view["summary"])
+
+    def test_start_skips_a_check_from_the_last_hour(self):
+        import threading
+        when = time.time() - 30
+        update.write_checked_at(self.data, when)
+        update.STATE["checked_at"] = 0
+        update._started = False
+        calls = []
+        original_consider = update.consider
+        original_sleep = time.sleep
+        update.consider = lambda *args, **kwargs: calls.append(kwargs)
+        started = threading.Event()
+
+        def stop(_seconds):
+            started.set()
+            raise SystemExit
+
+        time.sleep = stop
+        self.addCleanup(setattr, time, "sleep", original_sleep)
+        self.addCleanup(setattr, update, "consider", original_consider)
+        self.addCleanup(setattr, update, "_started", True)
+        update.start(self.data, self.src, lambda: {"auto_update": True}, lambda: False, lambda: None)
+        self.assertTrue(started.wait(2))
+        self.assertEqual(calls, [])
+        self.assertAlmostEqual(update.STATE["checked_at"], when, delta=1)
+        self.assertAlmostEqual(update.read_checked_at(self.data), when, delta=1)
+
+    def test_startup_tick_checks_when_the_last_one_is_old(self):
+        calls = []
+        original = update.consider
+        update.consider = lambda *args, **kwargs: calls.append(kwargs)
+        self.addCleanup(setattr, update, "consider", original)
+        update.STATE["checked_at"] = time.time() - 3601
+        update._startup_tick(True)
+        self.assertEqual(calls, [{"auto": True}])
+        calls.clear()
+        update.STATE["checked_at"] = time.time()
+        update._startup_tick(True)
+        self.assertEqual(calls, [])
 
 
 class GitHubUpdateTests(unittest.TestCase):

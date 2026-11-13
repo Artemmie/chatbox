@@ -757,7 +757,7 @@ class Vault:
         return self.pick(self.rank(query, exclude=exclude), project=project, limit=limit, budget=budget)
 
     # ---- save a chat -----------------------------------------------------
-    def save_chat(self, messages, backend="", workdir="", project=None, locked=False):
+    def save_chat(self, messages, backend="", workdir="", project=None, locked=False, chat_id=""):
         now = datetime.datetime.now()
         first = next((m["text"] for m in messages if m.get("role") == "you"), "Chat")
         title = re.sub(r"[\\/:*?\"<>|#^\[\]\n\r\t]+", " ", first).strip()[:50].strip() or "Chat"
@@ -775,10 +775,21 @@ class Vault:
         else:
             rel_dir = self.chats_dir()
             link = "[[Chatbox]]"
-        rel = _free_note(self, rel_dir, title)
-        full = self._abs(rel)
+        # Same chat id updates the note already written for it. A second click
+        # must not add "Title (2).md".
+        existing = _note_for_chat(self.path, chat_id)
+        if existing:
+            full = existing
+            rel = os.path.relpath(full, self.path).replace(os.sep, "/")
+        else:
+            rel = _free_note(self, rel_dir, title)
+            full = self._abs(rel)
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        lines = ["---", f'up: "{link}"']
+        lines = ["---"]
+        cid = _chat_id(chat_id)
+        if cid:
+            lines.append(f'id: "{cid}"')
+        lines.append(f'up: "{link}"')
         if name:
             lines.append("project: " + json.dumps(name, ensure_ascii=False))
         lines += ["---", "", f"# {title}", f"Back to {link}", "", f"Part of {link}", "",
@@ -1097,6 +1108,24 @@ def refresh_project_hub(vault_path, name):
     updated = _splice_marked(current, block, _CHATS_BEGIN, _CHATS_END)
     if updated != current:
         _atomic(hub, updated)
+
+
+def _chat_id(value):
+    text = str(value or "").strip().strip('"')
+    return text if re.fullmatch(r"[a-f0-9]{12}", text) else ""
+
+
+def _note_for_chat(vault_path, chat_id):
+    """The note already saved for this chat, or '' when this id has none."""
+    cid = _chat_id(chat_id)
+    if not cid or not vault_path:
+        return ""
+    try:
+        import sync as syncmod
+        found = syncmod.find_chat_notes(vault_path).get(cid) or []
+    except Exception:
+        return ""
+    return sorted(found)[0] if found else ""
 
 
 def _free_note(vault, directory, title):

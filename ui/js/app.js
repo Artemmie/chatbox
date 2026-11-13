@@ -30,6 +30,98 @@ let CHAT=null; // current conversation
 let carry=null; // backend whose next fresh turn should include the transcript
 function newChatState(){return {id:null,title:'',created:Date.now(),backend:S.backend,project:'',project_lock:false,items:[],sessions:fresh(),ctx:fresh(),sent:fresh()};}
 
+// In-app dialog. The desktop window's web page does not show window.confirm,
+// so those calls returned false and the button did nothing.
+const askQ=[];
+let askOn=false;
+function ask(opts){
+  return new Promise(resolve=>{
+    askQ.push({opts:opts||{}, resolve});
+    if(!askOn) runAsk();
+  });
+}
+function runAsk(){
+  const job=askQ.shift();
+  if(!job){askOn=false;return;}
+  askOn=true;
+  presentAsk(job.opts).then(result=>{job.resolve(result);runAsk();});
+}
+function presentAsk(o){
+  const dlg=$('#ask'), title=$('#asktitle'), text=$('#asktext'), input=$('#askinput'), box=$('#askbtns');
+  const buttons=o.buttons||[{id:'ok',label:o.ok||'OK',primary:true},{id:'cancel',label:o.cancel||'Cancel',cancel:true}];
+  const wants=!!o.input;
+  title.textContent=o.title||'Chatbox';
+  text.textContent=o.message||'';
+  text.hidden=!o.message;
+  input.hidden=!wants;
+  input.value=o.value||'';
+  if(wants) input.setAttribute('aria-label', o.message||'Answer');
+  box.innerHTML=buttons.map(b=>'<button type="button" class="'+(b.primary?'btn':'ghost')+'" data-ask="'+esc(b.id)+'"'+(b.cancel?' data-cancel="1"':'')+'>'+esc(b.label)+'</button>').join('');
+  return new Promise(resolve=>{
+    let result=null, settled=false;
+    const detach=()=>{
+      dlg.removeEventListener('close', onClose);
+      dlg.removeEventListener('keydown', onKey);
+      dlg.removeEventListener('cancel', onCancel);
+      box.removeEventListener('click', onClick);
+    };
+    const finish=value=>{
+      if(settled) return;
+      settled=true;
+      result=value;
+      detach();
+      if(dlg.open) dlg.close();
+      resolve(result);
+    };
+    const onClose=()=>{
+      detach();
+      if(!settled){settled=true;resolve(null);}
+    };
+    const onCancel=e=>{e.preventDefault();finish(null);};
+    const onClick=e=>{
+      const b=e.target.closest('[data-ask]');
+      if(!b) return;
+      e.preventDefault();
+      finish(b.dataset.cancel?null:{id:b.dataset.ask, value:wants?input.value:''});
+    };
+    const onKey=e=>{
+      if(e.key!=='Enter') return;
+      const active=document.activeElement;
+      if(active&&active.dataset&&active.dataset.cancel){e.preventDefault();e.stopPropagation();finish(null);return;}
+      if(active&&active.dataset&&active.dataset.ask&&!active.dataset.cancel){
+        e.preventDefault();e.stopPropagation();
+        finish({id:active.dataset.ask, value:wants?input.value:''});
+        return;
+      }
+      const primary=box.querySelector('.btn[data-ask]')||box.querySelector('[data-ask]:not([data-cancel])');
+      if(primary){e.preventDefault();e.stopPropagation();finish({id:primary.dataset.ask, value:wants?input.value:''});}
+    };
+    dlg.addEventListener('cancel', onCancel);
+    dlg.addEventListener('close', onClose);
+    dlg.addEventListener('keydown', onKey);
+    box.addEventListener('click', onClick);
+    dlg.showModal();
+    if(wants) input.focus();
+    else{const primary=box.querySelector('.btn')||box.querySelector('button'); if(primary) primary.focus();}
+  });
+}
+function askConfirm(message, title){
+  return ask({title:title||'Confirm', message, buttons:[
+    {id:'ok', label:'OK', primary:true},
+    {id:'cancel', label:'Cancel', cancel:true},
+  ]}).then(r=>!!(r&&r.id==='ok'));
+}
+function askAlert(message, title){
+  return ask({title:title||'Chatbox', message, buttons:[{id:'ok', label:'OK', primary:true}]});
+}
+function askPrompt(message, value){
+  return ask({title:'Chatbox', message, input:true, value:value||'', buttons:[
+    {id:'ok', label:'OK', primary:true},
+    {id:'cancel', label:'Cancel', cancel:true},
+  ]}).then(r=>r&&r.id==='ok'?r.value:null);
+}
+$('#askform').addEventListener('submit', e=>e.preventDefault());
+
 // ===== markdown =====
 function inline(t){
   let s=esc(t);
@@ -169,7 +261,7 @@ function renderChatList(list){
     if(g.length)h+='<div class="group">'+name+'</div>'+g.map(c=>'<div class="chatitem'+(CHAT&&c.id===CHAT.id?' cur':'')+'" data-id="'+c.id+'"><span class="bdot" style="background:'+color(c.backend||'claude')+'"></span><span class="t">'+esc(c.title||'Untitled')+'</span><button class="icon del" type="button" title="Delete chat">'+ICON.trash+'</button></div>').join('');}
   $('#chatlist').innerHTML=h||'<div class="side-empty">Your chats will show up here.</div>';}
 $('#chatlist').addEventListener('click',async e=>{const it=e.target.closest('.chatitem');if(!it)return;const id=it.dataset.id;
-  if(e.target.closest('.del')){if(!confirm('Delete this chat?'))return;renderChatList(await post('/api/chats',{action:'delete',id}));if(CHAT.id===id)startNew();return;}
+  if(e.target.closest('.del')){if(!await askConfirm('Delete this chat?'))return;renderChatList(await post('/api/chats',{action:'delete',id}));if(CHAT.id===id)startNew();return;}
   if(S.busy){note('Stop the current reply before opening another chat.');return;}
   const c=await fetch('/api/chats/'+id).then(r=>r.json());if(c.error)return;
   carry=null;
@@ -646,8 +738,9 @@ function renderSettings(p){
   $('#mempath').textContent=p.memories.length+' saved · '+p.path;$('#memclear').disabled=!p.memories.length;
   $('#memlist').innerHTML=p.memories.length?p.memories.map(m=>'<div class="mem" data-id="'+m.id+'"><input class="field" value="'+esc(m.text)+'" maxlength="500"><span class="src">'+(m.source==='assistant'?'by assistant':m.source==='obsidian'?'in Obsidian':'by you')+(m.created?' · '+esc(m.created):'')+'</span><button class="icon" type="button" title="Delete">'+ICON.trash+'</button></div>').join('')
     :'<div class="muted">No memories yet.</div>';
-  $('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';}
-async function memAct(body){const r=await post(body.settings?'/api/settings':'/api/memory',body);if(r.error)alert(r.error);renderSettings(r);CHAT.ctx=fresh();return r;}
+  $('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';
+  applyNotes(p);}
+async function memAct(body){const r=await post(body.settings?'/api/settings':'/api/memory',body);if(r.error)await askAlert(r.error);renderSettings(r);CHAT.ctx=fresh();return r;}
 function refreshMemCount(){fetch('/api/settings').then(r=>r.json()).then(p=>{$('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';if($('#set').open)renderSettings(p);});}
 $('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch('/api/settings').then(r=>r.json()));};
 for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','auto_update','auto_install_updates'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
@@ -657,17 +750,36 @@ function showNotesError(text){
   el.className='notesstatus err';
   if($('#set').open) el.scrollIntoView({block:'nearest'});
 }
+function showVaultMsg(text, kind){
+  const msg=$('#vaultmsg');
+  if(!msg) return;
+  msg.textContent=text||'';
+  msg.className='vaultmsg'+(kind?(' '+kind):'');
+}
+let vaultSaveGen=0;
 async function saveTypedVault(path){
-  const cur=await fetch('/api/settings').then(r=>r.json()).catch(()=>({}));
-  const from=(cur.notes&&cur.notes.mode)||'';
-  let copy=false;
-  if(from==='chatbox') copy=confirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
-  const r=await post('/api/notes',{mode:'obsidian',path,copy});
-  if(r.error){showNotesError(r.error);return r;}
-  renderSettings(r);
-  if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});
-  if(r.vault)renderObsidian(r);
-  return r;
+  const btn=$('#vaultsave');
+  const gen=++vaultSaveGen;
+  if(btn){btn.disabled=true;btn.textContent='Saving…';}
+  showVaultMsg('');
+  try{
+    const cur=await fetch('/api/settings').then(r=>r.json()).catch(()=>({}));
+    const from=(cur.notes&&cur.notes.mode)||'';
+    let copy=false;
+    if(from==='chatbox') copy=await askConfirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
+    const r=await post('/api/notes',{mode:'obsidian',path,copy});
+    if(r.error){showVaultMsg(r.error,'err');return r;}
+    renderSettings(r);
+    showVaultMsg(r.notice||('Saved: notes go to '+(r.vault_name||'this vault')),'ok');
+    if(btn) btn.textContent='Saved';
+    setTimeout(()=>{if(gen===vaultSaveGen&&btn&&btn.textContent==='Saved') btn.textContent='Save';},1600);
+    return r;
+  }catch(e){
+    showVaultMsg('Could not save the vault.','err');
+    return {error:String(e)};
+  }finally{
+    if(btn){btn.disabled=false;if(btn.textContent==='Saving…') btn.textContent='Save';}
+  }
 }
 document.querySelectorAll('input[name="notes"]').forEach(el=>el.onchange=async()=>{
   if(!el.checked)return;
@@ -676,7 +788,7 @@ document.querySelectorAll('input[name="notes"]').forEach(el=>el.onchange=async()
     const from=(cur.notes&&cur.notes.mode)||'';
     const path=(cur.settings&&cur.settings.vault_path)||'';
     let copy=false;
-    if(from==='chatbox'&&path) copy=confirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
+    if(from==='chatbox'&&path) copy=await askConfirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
     const r=await post('/api/notes',{mode:'obsidian',copy});
     if(r.error) showNotesError(r.error);
     else {renderSettings(r); if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});}
@@ -691,7 +803,7 @@ $('#set').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');
 $('#vaultpick').onsubmit=async e=>{
   e.preventDefault();
   const v=$('#vaultpickpath').value.trim();
-  if(!v){showNotesError('Type a folder path, or click Change… to pick one.');return;}
+  if(!v){showVaultMsg('Type a folder path, or click Change… to pick one.','err');return;}
   await saveTypedVault(v);
 };
 $('#choosevault').onclick=async()=>{
@@ -700,8 +812,8 @@ $('#choosevault').onclick=async()=>{
   try{
     const picked=await post('/api/pick-folder',{});
     if(picked.cancelled) return;
-    if(picked.error){showNotesError(picked.error);return;}
-    if(!picked.path){showNotesError('No folder was chosen.');return;}
+    if(picked.error){showVaultMsg(picked.error,'err');return;}
+    if(!picked.path){showVaultMsg('No folder was chosen.','err');return;}
     $('#vaultpickpath').value=picked.path;
     await saveTypedVault(picked.path);
   }catch(e){
@@ -710,10 +822,10 @@ $('#choosevault').onclick=async()=>{
     btn.disabled=false; btn.textContent='Change…';
   }
 };
-$('#projectpick').onchange=()=>{
+$('#projectpick').onchange=async()=>{
   let value=$('#projectpick').value;
   if(value==='__new__'){
-    const name=prompt('Project name');
+    const name=await askPrompt('Project name');
     if(!name||!name.trim()){renderProject();return;}
     value=name.trim();
   }
@@ -724,34 +836,60 @@ $('#opennotes').onclick=async()=>{
   const r=await post('/api/notes',{action:'open'});
   if(r.error) showNotesError(r.error);
 };
+$('#openobsidian').onclick=async()=>{
+  const r=await post('/api/notes',{action:'obsidian'});
+  if(r.error) await askAlert(r.error);
+};
+$('#disconnectnotes').onclick=async()=>{
+  const choice=await ask({
+    title:'Disconnect Obsidian?',
+    message:'Notes already in the vault stay there. Where should new notes go?',
+    buttons:[
+      {id:'chatbox', label:'Keep notes inside Chatbox', primary:true},
+      {id:'off', label:'Turn notes off'},
+      {id:'cancel', label:'Cancel', cancel:true},
+    ],
+  });
+  if(!choice||choice.id==='cancel') return;
+  const r=await post('/api/notes',{mode:choice.id});
+  if(r.error){await askAlert(r.error);return;}
+  renderSettings(r);
+  if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});
+};
 $('#instsave').onclick=async()=>{await memAct({settings:{instructions:$('#instructions').value}});
   $('#instmsg').textContent='Saved — new chats will use it.';setTimeout(()=>$('#instmsg').textContent='',3000);};
 $('#memadd').onsubmit=async e=>{e.preventDefault();const t=$('#memtext').value.trim();if(!t)return;const r=await memAct({action:'add',text:t});if(!r.error)$('#memtext').value='';};
 $('#memlist').addEventListener('change',e=>{const row=e.target.closest('.mem');if(row)memAct({action:'edit',id:row.dataset.id,text:e.target.value});});
 $('#memlist').addEventListener('click',e=>{const row=e.target.closest('.mem');if(row&&e.target.closest('button'))memAct({action:'delete',id:row.dataset.id});});
-$('#memclear').onclick=()=>{if(confirm('Delete all memories? This cannot be undone.'))memAct({action:'clear'});};
+$('#memclear').onclick=async()=>{if(await askConfirm('Delete all memories? This cannot be undone.'))memAct({action:'clear'});};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
 
-// ===== Obsidian =====
+// ===== notes card (one place) and manual save =====
 let VAULT=null;
-function renderObsidian(p){
-  VAULT=p.vault;PROJECTS=p.projects||[];$('#savebtn').hidden=!VAULT;renderProject();
-  let h='<div class="sec-h"><b>Obsidian</b><span class="pill '+(VAULT?'ok">Connected · '+esc(VAULT.name)+' · '+VAULT.notes+' notes':'bad">Not connected')+'</span></div>'
-    +'<div class="muted">Long-term memory shared by every assistant. Your vault stays on this computer; no sign-in needed. Related notes are sent only to the assistant you chat with.</div>';
-  if(VAULT)h+='<code class="path">'+esc(VAULT.path)+'</code><div class="row"><button class="ghost" data-obs="disconnect">Disconnect</button></div>';
-  else{h+=(p.detected||[]).map(d=>'<div class="row"><button class="btn" data-obs="connect" data-path="'+esc(d)+'">Connect “'+esc(d.split('/').pop())+'”</button><code class="path">'+esc(d)+'</code></div>').join('');
-    h+='<form class="row" id="obsform"><input class="field" id="obspath" placeholder="Or type the vault folder, e.g. ~/Documents/MyVault" style="flex:1;min-width:200px"><button class="ghost">Connect</button></form>';}
-  $('#obs').innerHTML=h;
-  $('#memcount').textContent=p.memories&&p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';}
-async function obsAct(body){const r=await post('/api/obsidian',body);if(r.error)alert(r.error);renderObsidian(r);if($('#set').open)renderSettings(r);CHAT.ctx=fresh();return r;}
-$('#obs').addEventListener('click',e=>{const t=e.target.closest('[data-obs]');if(!t)return;
-  if(t.dataset.obs==='disconnect'&&!confirm('Disconnect Obsidian? Your notes stay where they are; memories go back to Chatbox’s own list.'))return;
-  obsAct({action:t.dataset.obs,path:t.dataset.path});});
-$('#obs').addEventListener('submit',e=>{e.preventDefault();const v=$('#obspath').value.trim();if(v)obsAct({action:'connect',path:v});});
-$('#savebtn').onclick=async()=>{const msgs=CHAT.items.filter(i=>i.r==='you'||i.r==='bot').map(i=>({role:i.r==='you'?'you':'bot',who:i.r==='you'?'You':NAMES[i.b],text:i.t}));
+function applyNotes(p){
+  if(!p) return;
+  VAULT=p.vault||null;
+  PROJECTS=p.projects||[];
+  const card=(p.notes&&p.notes.card)||{};
+  const title=$('#notescardtitle');
+  if(title&&card.title) title.textContent=card.title;
+  const disc=$('#disconnectnotes');
+  if(disc) disc.hidden=!card.disconnect;
+  const obs=$('#openobsidian');
+  if(obs) obs.hidden=!card.open_obsidian;
+  const btn=$('#savebtn');
+  if(btn) btn.hidden=!card.show_save;
+  if(p.memories) $('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';
+  renderProject();
+}
+$('#savebtn').onclick=async()=>{
+  const msgs=CHAT.items.filter(i=>i.r==='you'||i.r==='bot').map(i=>({role:i.r==='you'?'you':'bot',who:i.r==='you'?'You':NAMES[i.b],text:i.t}));
   if(!msgs.length){note('Nothing to save yet.');return;}
-  const r=await post('/api/obsidian',{action:'save_chat',messages:msgs,backend:NAMES[S.backend]});
-  addItem({r:'note',t:r.error?r.error:'📓 Saved to Obsidian: '+r.saved});};
+  if(!CHAT.id) CHAT.id=[...crypto.getRandomValues(new Uint8Array(6))].map(x=>x.toString(16).padStart(2,'0')).join('');
+  const r=await post('/api/obsidian',{action:'save_chat',id:CHAT.id,messages:msgs,backend:NAMES[S.backend],workdir:CHAT.workdir||S.workdir||'',project:CHAT.project||'',project_lock:!!CHAT.project_lock});
+  if(r.settings||r.notes) applyNotes(r);
+  addItem({r:'note',t:r.error?r.error:'📓 Saved: '+r.saved});
+};
 
 // ===== sign-in status (cheap /api/auth-status check) =====
 let AUTHSTATUS={backends:[]},authJobSeen=false;
@@ -795,7 +933,7 @@ async function startSignIn(id,btn){
       let note=block.querySelector('.authcmd');
       if(!note){note=document.createElement('div');note.className='authcmd';block.appendChild(note);}
       note.textContent=cmd;}
-    else if(r&&r.error)alert(r.error);
+    else if(r&&r.error)await askAlert(r.error);
     return;}
   openAccounts();}
 $('#authrow').addEventListener('click',e=>{const btn=e.target.closest('[data-signin]');if(!btn||btn.disabled)return;startSignIn(btn.dataset.signin,btn);});
@@ -877,7 +1015,7 @@ $('#acclist').addEventListener('input',e=>{if(e.target.id==='ollamaurl')ollamaTy
 $('#acclist').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id&&e.target.id.startsWith('code_')){e.preventDefault();e.target.nextElementSibling.click();}});
 function ollamaRefresh(){delete modelCache.ollama;if(S.backend==='ollama')loadModels();accJSON='';refreshAuth(true);return refreshAccounts(true);}
 $('#acclist').addEventListener('submit',async e=>{if(e.target.id!=='ollamaform')return;e.preventDefault();
-  const r=await post('/api/settings',{settings:{ollama_url:$('#ollamaurl').value.trim()}});if(r.error)alert(r.error);
+  const r=await post('/api/settings',{settings:{ollama_url:$('#ollamaurl').value.trim()}});if(r.error)await askAlert(r.error);
   ollamaTyped=null;ollamaRefresh();});
 $('#acclist').addEventListener('click',async e=>{
   const t=e.target.closest('[data-act]');if(!t)return;const act=t.dataset.act,s=t.dataset.s,name=ACC[s]&&ACC[s].name;
@@ -886,14 +1024,14 @@ $('#acclist').addEventListener('click',async e=>{
   if(act==='open'){post('/api/open',{url:t.dataset.url});return;}
   if(act==='copycode'){copy(t.dataset.code,t);return;}
   if(act==='ollamacheck'){t.disabled=true;ollamaRefresh();return;}
-  if(act==='install'&&!confirm('Download and run the official '+name+' installer?'))return;
-  if(act==='logout'&&!confirm('Sign out of '+name+' on this computer?'+(s==='codex'?'\n\nThis also signs out Codex in the ChatGPT app.':s==='chatgpt'?'\n\nThis disconnects Chatbox from your ChatGPT plan here. You can also remove Chatbox in ChatGPT settings.':'')))return;
+  if(act==='install'&&!await askConfirm('Download and run the official '+name+' installer?'))return;
+  if(act==='logout'&&!await askConfirm('Sign out of '+name+' on this computer?'+(s==='codex'?'\n\nThis also signs out Codex in the ChatGPT app.':s==='chatgpt'?'\n\nThis disconnects Chatbox from your ChatGPT plan here. You can also remove Chatbox in ChatGPT settings.':'')))return;
   const body={service:s,action:act};
   if(act==='input'){body.text=codes[s]||'';if(!body.text.trim())return;codes[s]='';}
-  t.disabled=true;const r=await post('/api/account',body);if(r.error)alert(r.error);
+  t.disabled=true;const r=await post('/api/account',body);if(r.error)await askAlert(r.error);
   if(act==='dismiss'){for(const k in modelCache)delete modelCache[k];loadModels();}
   accJSON='';refreshAccounts(act==='dismiss');});
-function openAccounts(){if(!$('#acc').open)$('#acc').showModal();accJSON='';refreshAccounts(true);fetch('/api/settings').then(r=>r.json()).then(renderObsidian);}
+function openAccounts(){if(!$('#acc').open)$('#acc').showModal();accJSON='';refreshAccounts(true);fetch('/api/settings').then(r=>r.json()).then(applyNotes);}
 async function refreshUpdate(){
   let u;try{u=await fetch('/api/update').then(r=>r.json());}catch(e){return;}
   const bar=$('#updatebar');if(!bar)return;
@@ -906,14 +1044,36 @@ async function refreshUpdate(){
   $('#updatemsg').textContent=u.message||'';
   if(u.checking)setTimeout(refreshUpdate,3000);
 }
-$('#updatebtn').onclick=async()=>{
+async function applyUpdate(msg, btn){
   const cur=await fetch('/api/update').then(r=>r.json()).catch(()=>null);
   if(cur&&cur.url&&!cur.can_apply){post('/api/open',{url:cur.url});return;}
-  $('#updatebtn').disabled=true;$('#updatemsg').textContent='Updating…';
+  if(btn) btn.disabled=true;
+  if(msg) msg.textContent='Updating…';
   const r=await post('/api/update',{action:'apply'});
-  if(r.error){$('#updatemsg').textContent=r.error;$('#updatebtn').disabled=false;return;}
-  $('#updatemsg').textContent=r.restarting?'Updated. Restarting…':(r.error||'');
+  if(r.error){if(msg) msg.textContent=r.error; if(btn) btn.disabled=false; return;}
+  if(msg) msg.textContent=r.restarting?'Updated. Restarting…':(r.error||'');
+}
+$('#updatebtn').onclick=()=>applyUpdate($('#updatemsg'), $('#updatebtn'));
+$('#checknow').onclick=async()=>{
+  const btn=$('#checknow'), msg=$('#checkmsg'), go=$('#setupdatenow');
+  btn.disabled=true;
+  msg.textContent='Checking…';
+  go.hidden=true;
+  let r;
+  try{r=await post('/api/update',{action:'now'});}
+  catch(e){msg.textContent='Could not check for an update.'; btn.disabled=false; return;}
+  btn.disabled=false;
+  if(r.available){
+    msg.textContent=r.summary||r.message||'Update available';
+    go.hidden=false;
+    go.textContent=r.can_apply?'Update now':(r.download?'Download update':'Update now');
+  }else{
+    msg.textContent=r.summary||r.error||'Could not check for an update.';
+    go.hidden=true;
+  }
+  refreshUpdate();
 };
+$('#setupdatenow').onclick=()=>applyUpdate($('#checkmsg'), $('#setupdatenow'));
 refreshUpdate();
 setInterval(refreshUpdate,60000);
 $('#accbtn').onclick=openAccounts;
@@ -972,7 +1132,7 @@ $('#usebtn').onclick=()=>{$('#usage').showModal();loadUsage();};
 $('#u-range').onclick=e=>{const b=e.target.closest('button');if(!b)return;U.days=+b.dataset.d;store.set('u_days',U.days);loadUsage();};
 $('#u-metric').onclick=e=>{const b=e.target.closest('button');if(!b)return;U.metric=b.dataset.k;store.set('u_metric',U.metric);renderUsage();};
 $('#u-note').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a)post('/api/open',{url:a.dataset.href});});
-$('#u-clear').onclick=async()=>{if(!confirm('Clear all usage statistics? Chats and memories are not affected.'))return;await post('/api/usage',{action:'clear'});loadUsage();};
+$('#u-clear').onclick=async()=>{if(!await askConfirm('Clear all usage statistics? Chats and memories are not affected.'))return;await post('/api/usage',{action:'clear'});loadUsage();};
 addEventListener('resize',()=>{if($('#usage').open)renderUsage();});
 
 // ===== start =====
@@ -1000,7 +1160,7 @@ fetch('/api/status').then(r=>r.json()).then(s=>{S.home=s.home;showVersion(s);pai
 renderAuth();
 refreshAuth(false);
 setInterval(()=>refreshAuth(false),60000);
-fetch('/api/settings').then(r=>r.json()).then(renderObsidian);
+fetch('/api/settings').then(r=>r.json()).then(applyNotes);
 fetch('/api/chats').then(r=>r.json()).then(renderChatList);
 async function refreshChats(){
   if(document.hidden||S.busy)return;
