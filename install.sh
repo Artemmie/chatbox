@@ -35,6 +35,8 @@ if [ -n "$BOX" ] && [ "$OS" = Darwin ]; then echo "--distrobox is for Linux only
 echo "Installing Chatbox to $D"
 mkdir -p "$D"
 cp "$SRC"/*.py "$SRC"/chatbox.svg "$D"/
+# VERSION is what the sidebar, Settings and the window title show. Without it the copy has no version.
+if [ -f "$SRC/VERSION" ]; then cp "$SRC/VERSION" "$D"/; fi
 rm -rf "$D/ui"
 cp -R "$SRC/ui" "$D/ui"
 

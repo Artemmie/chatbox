@@ -3,11 +3,13 @@
 Linux and macOS keep the same directories and process groups as before.
 Windows uses %LOCALAPPDATA%\\Chatbox, .cmd/.exe shims, and taskkill for a process tree.
 """
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 
@@ -221,3 +223,30 @@ def bash_exe():
             if os.path.isfile(candidate):
                 return candidate
     return "bash"
+
+
+def already_running(port, opener=None, timeout=2):
+    """True when a Chatbox window already runs on this port and came to the front.
+
+    Two copies used to run side by side. The second one got another port, and an
+    update restarted only the copy that applied it, so the other kept showing the
+    old screens. Now a second launch hands over to the first and exits.
+
+    False when nothing answers, when something else owns the port, or when the
+    copy there is too old to know /api/focus or has no window. Chatbox then starts
+    as before.
+    """
+    opener = opener or urllib.request.urlopen
+    base = "http://127.0.0.1:%d" % int(port)
+    try:
+        with opener(base + "/api/status", timeout=timeout) as reply:
+            info = json.loads(reply.read().decode("utf-8", "replace") or "{}")
+        if not isinstance(info, dict) or info.get("app") != "chatbox" or not info.get("window"):
+            return False
+        ask = urllib.request.Request(base + "/api/focus", data=b"{}", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with opener(ask, timeout=timeout) as reply:
+            done = json.loads(reply.read().decode("utf-8", "replace") or "{}")
+        return bool(isinstance(done, dict) and done.get("ok"))
+    except Exception:
+        return False
