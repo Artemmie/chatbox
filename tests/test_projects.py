@@ -9,7 +9,7 @@ import unittest
 import sync
 import vault
 
-from tests.support import isolate
+from tests.support import isolate, request, serve
 
 
 def _write(path, text):
@@ -283,6 +283,145 @@ class MapTests(unittest.TestCase):
         text = lib.map_text(budget=500)
         self.assertLessEqual(len(text), 500)
         self.assertIn("Ocean Sweeper", lib.map_text())
+
+
+class SidebarProjectTests(unittest.TestCase):
+    """Projects in the sidebar: create, move a note, rename, and delete without losing notes."""
+
+    def _vault(self):
+        box, _data = isolate()
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, True)
+        root = os.path.join(parent, "vault")
+        os.makedirs(root)
+        box.MEMORY.connect_vault(root)
+        box.MEMORY.update_settings({"sync_chats": True, "notes_storage": "obsidian"})
+        sync._libraries.clear()
+        return box, root
+
+    def _live(self, root, cid):
+        return sync.find_chat_notes(root).get(cid, [])
+
+    def test_moving_a_chat_moves_the_vault_note(self):
+        box, root = self._vault()
+        chat = {"id": "aaa111aaa111", "title": "Move me", "backend": "claude",
+                "project": "Alpha", "project_lock": True,
+                "items": [{"r": "you", "t": "Keep this sentence."}]}
+        box.save_chat(dict(chat))
+        first = self._live(root, chat["id"])
+        self.assertEqual(len(first), 1)
+        self.assertIn(os.path.join("Alpha", "Chats"), first[0])
+        chat["project"] = "Beta"
+        box.save_chat(dict(chat))
+        notes = self._live(root, chat["id"])
+        self.assertEqual(len(notes), 1)
+        self.assertIn(os.path.join("Beta", "Chats"), notes[0])
+        self.assertFalse(os.path.exists(first[0]))
+        self.assertIn("Keep this sentence.", _read(notes[0]))
+        loaded = box.load_chat(chat["id"])
+        self.assertEqual(loaded["project"], "Beta")
+        self.assertTrue(loaded["project_lock"])
+
+    def test_rename_keeps_notes_and_delete_only_unlinks_chats(self):
+        box, root = self._vault()
+        box.create_project("Ocean")
+        lone = os.path.join(root, "Projects", "Ocean.md")
+        with open(lone, "a", encoding="utf-8") as handle:
+            handle.write("\nUser wrote this.\n")
+        box.save_chat({"id": "ccc333ccc333", "title": "Range", "backend": "claude",
+                       "project": "Ocean", "project_lock": True,
+                       "items": [{"r": "you", "t": "Place the shelter"}]})
+        hub = os.path.join(root, "Projects", "Ocean", "Ocean.md")
+        self.assertIn("User wrote this.", _read(hub))
+        map_note = os.path.join(root, "Projects", "Ocean", "Map.md")
+        original = "Keep this sensor map.\n"
+        _write(map_note, original)
+        with open(os.path.join(root, "Inbox.md"), "a", encoding="utf-8") as handle:
+            handle.write("\nSee [[Ocean]] and [[Projects/Ocean/Ocean]].\n")
+        box.rename_project("Ocean", "Harbor")
+        self.assertFalse(os.path.exists(os.path.join(root, "Projects", "Ocean")))
+        self.assertFalse(os.path.exists(lone))
+        hub = os.path.join(root, "Projects", "Harbor", "Harbor.md")
+        self.assertIn("User wrote this.", _read(hub))
+        self.assertIn("# Harbor", _read(hub))
+        moved_map = os.path.join(root, "Projects", "Harbor", "Map.md")
+        self.assertEqual(_read(moved_map), original)
+        inbox = _read(os.path.join(root, "Inbox.md"))
+        self.assertIn("[[Harbor]]", inbox)
+        self.assertIn("[[Projects/Harbor/Harbor]]", inbox)
+        self.assertNotIn("[[Ocean]]", inbox)
+        loaded = box.load_chat("ccc333ccc333")
+        self.assertEqual(loaded["project"], "Harbor")
+        self.assertIn("Place the shelter", loaded["items"][0]["t"])
+        self.assertEqual(len(self._live(root, "ccc333ccc333")), 1)
+        names = [item["name"] for item in vault.Vault(root).map()["projects"]]
+        self.assertIn("Harbor", names)
+        self.assertNotIn("Ocean", names)
+        box.delete_project("Harbor")
+        self.assertEqual(_read(moved_map), original)
+        self.assertTrue(os.path.isfile(hub))
+        self.assertIn("User wrote this.", _read(hub))
+        self.assertTrue(os.path.isfile(os.path.join(root, "Projects", "Harbor", ".chatbox-retired")))
+        loaded = box.load_chat("ccc333ccc333")
+        self.assertEqual(loaded["project"], "")
+        self.assertIn("Place the shelter", loaded["items"][0]["t"])
+        notes = self._live(root, "ccc333ccc333")
+        self.assertEqual(len(notes), 1)
+        self.assertNotIn(os.path.join("Harbor", "Chats"), notes[0])
+        names = [item["name"] for item in vault.Vault(root).map()["projects"]]
+        self.assertNotIn("Harbor", names)
+        box.create_project("Harbor")
+        names = [item["name"] for item in vault.Vault(root).map()["projects"]]
+        self.assertIn("Harbor", names)
+        self.assertFalse(os.path.isfile(os.path.join(root, "Projects", "Harbor", ".chatbox-retired")))
+        self.assertIn("User wrote this.", _read(hub))
+
+    def test_delete_of_a_lone_note_keeps_the_note(self):
+        box, root = self._vault()
+        box.create_project("Sketch")
+        path = os.path.join(root, "Projects", "Sketch.md")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\nKeep this project note.\n")
+        box.delete_project("Sketch")
+        text = _read(path)
+        self.assertIn("Keep this project note.", text)
+        self.assertNotIn("Sketch", [item["name"] for item in vault.Vault(root).map()["projects"]])
+
+    def test_sync_folder_and_bad_names_are_refused(self):
+        box, root = self._vault()
+        self.assertTrue(os.path.isdir(os.path.join(root, "Projects", "Chatbox")))
+        with self.assertRaises(ValueError):
+            box.rename_project("Chatbox", "Other")
+        self.assertTrue(os.path.isdir(os.path.join(root, "Projects", "Chatbox")))
+        with self.assertRaises(ValueError):
+            box.delete_project("Chatbox")
+        with self.assertRaises(ValueError):
+            box.create_project("../etc")
+        box.create_project("Alpha")
+        box.create_project("Beta")
+        with self.assertRaises(ValueError):
+            box.rename_project("Alpha", "Beta")
+        self.assertTrue(os.path.exists(os.path.join(root, "Projects", "Alpha.md"))
+                        or os.path.isdir(os.path.join(root, "Projects", "Alpha")))
+
+    def test_notes_off_cannot_add_a_project(self):
+        box, _data = isolate()
+        box.MEMORY.set_notes_storage("off")
+        with self.assertRaises(ValueError):
+            box.create_project("Nope")
+
+    def test_project_api_returns_the_list(self):
+        box, _root = self._vault()
+        srv = serve(box)
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        code, raw = request(srv, "/api/projects", {"action": "create", "name": "From API"})
+        self.assertEqual(code, 200)
+        body = json.loads(raw)
+        self.assertNotIn("error", body)
+        self.assertTrue(any(item["name"] == "From API" for item in body["projects"]))
+        code, raw = request(srv, "/api/projects", {"action": "nope"})
+        self.assertIn("error", json.loads(raw))
 
 
 if __name__ == "__main__":
