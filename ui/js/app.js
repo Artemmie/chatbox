@@ -204,12 +204,12 @@ function paint(){
   const b=picked[0]||S.backend;
   if(b!==S.backend){S.backend=b;store.set('backend',b);}
   const blabel=picked.length>1?NAMES[b]+' +'+(picked.length-1):NAMES[b];
-  pick('#p-backend','<span class="bdot" style="background:'+color(b)+'"></span><span class="lbl">'+blabel+'</span>'+ICON.chev,
+  pick('#p-backend','<span class="bdot" style="background:'+color(b)+'"></span>'+sdot(b)+'<span class="lbl">'+blabel+'</span>'+ICON.chev,
     '<div class="mh">Assistant'+(picked.length>1?' · select more than one':'')+'</div>'+BACKENDS.map(x=>{const ok=ready(x);const a=ACC[SVC[x]];
       const on=picked.includes(x);
       const sub=!ok?(x==='ollama'?(a&&a.installed?'No models yet':'Not running')+' — see Accounts':(a&&!a.installed?'Not installed':'Not connected')+' — set up in Accounts')
         :on&&picked.length>1?'Asked together':x==='ollama'?'Local models, plain chat':x==='chatgpt'?'Your ChatGPT plan · plain chat':x==='codex'?'Coding agent by OpenAI':x==='claude'?'Claude Code by Anthropic':'Cursor agent';
-      return '<button type="button" class="mi'+(on?' sel':'')+'" data-b="'+x+'"'+(ok?'':' disabled')+'><span class="bdot" style="background:'+color(x)+'"></span><span class="mt"><b>'+NAMES[x]+'</b><span>'+sub+'</span></span>'+ICON.check+'</button>';}).join('')
+      return '<button type="button" class="mi'+(on?' sel':'')+'" data-b="'+x+'"'+(ok?'':' disabled')+'><span class="bdot" style="background:'+color(x)+'"></span>'+sdot(x)+'<span class="mt"><b>'+NAMES[x]+'</b><span>'+sub+'</span></span>'+ICON.check+'</button>';}).join('')
       +'<button type="button" class="mi" data-openacc><span class="mt"><span>Manage accounts…</span></span></button>');
   const chat=picked.every(NOFOLDER);if(chat&&S.mode==='agent')S.mode='ask';
   const limited=picked.filter(NOFOLDER);
@@ -266,7 +266,7 @@ function currentModel(){return modelFor(S.backend);}
 function paintModels(){const list=modelCache[S.backend];const cur=currentModel();
   const several=activeChoice().length>1;
   const label=list==='loading'?'Loading…':cur?((list.find(m=>m[0]===cur)||[cur,cur])[1]):'Auto';
-  pick('#p-model','<span class="lbl">'+esc(several?NAMES[S.backend]+' · '+label:label)+'</span>'+ICON.chev,
+  pick('#p-model',sdot(S.backend)+'<span class="lbl">'+esc(several?NAMES[S.backend]+' · '+label:label)+'</span>'+ICON.chev,
     '<div class="mh">Model'+(several?' for '+NAMES[S.backend]:'')+'</div>'+(several?'<div class="mh" style="text-transform:none;letter-spacing:0;font-size:12px">Other selected assistants use their own saved model.</div>':'')
     +'<button type="button" class="mi'+(cur?'':' sel')+'" data-model=""><span class="mt"><b>Auto</b><span>'+(S.backend==='ollama'?'Your most recently downloaded model':'Let '+NAMES[S.backend]+' choose')+'</span></span>'+ICON.check+'</button>'
     +(Array.isArray(list)?list.map(([id,l])=>'<button type="button" class="mi'+(id===cur?' sel':'')+'" data-model="'+esc(id)+'"><span class="mt"><b>'+esc(l)+'</b></span>'+ICON.check+'</button>').join(''):''));}
@@ -604,6 +604,53 @@ $('#savebtn').onclick=async()=>{const msgs=CHAT.items.filter(i=>i.r==='you'||i.r
   const r=await post('/api/obsidian',{action:'save_chat',messages:msgs,backend:NAMES[S.backend]});
   addItem({r:'note',t:r.error?r.error:'📓 Saved to Obsidian: '+r.saved});};
 
+// ===== sign-in status (cheap /api/auth-status check) =====
+let AUTHSTATUS={backends:[]},authJobSeen=false;
+const AUTH_STATE={ready:1,signed_out:1,missing:1,unknown:1};
+function authOf(id){return (AUTHSTATUS.backends||[]).find(a=>a.id===id);}
+function sdot(id){
+  const a=authOf(id);
+  if(!a||!AUTH_STATE[a.state])return '';
+  const title={ready:'Signed in',signed_out:'Installed, not signed in',missing:'Not installed',unknown:"Couldn't check"}[a.state];
+  return '<span class="sdot '+a.state+'" title="'+esc(title)+'"></span>';}
+function renderAuth(){
+  const box=$('#authrow');if(!box)return;
+  const rows=AUTHSTATUS.backends||[];
+  if(!rows.length){box.innerHTML='<div class="authlabel">Sign-in</div><div class="authsub">Checking…</div>';return;}
+  box.innerHTML='<div class="authlabel">Sign-in</div>'+rows.map(a=>{
+    if(!AUTH_STATE[a.state])return '';
+    let extra='';
+    if(a.state==='signed_out'&&a.id!=='ollama'){
+      const tip=a.sign_in_command||(a.id==='chatgpt'?'Continue with ChatGPT':'Sign in');
+      extra='<button type="button" class="authsign" data-signin="'+esc(a.id)+'" title="'+esc(tip)+'" aria-label="Sign in to '+esc(a.name)+'">Sign in</button>';}
+    else if(a.state==='unknown')extra='<span class="authnote">Couldn\u2019t check</span>';
+    const hint=a.state==='missing'&&a.install_hint?'<div class="authsub" title="'+esc(a.install_hint)+'">'+esc(a.install_hint)+'</div>':'';
+    return '<div class="authblock" data-auth="'+esc(a.id)+'"><div class="authitem" title="'+esc(a.detail||'')+'"><span class="sdot '+a.state+'"></span><span class="nm">'+esc(a.name)+'</span>'+extra+'</div>'+hint+'</div>';
+  }).join('');}
+async function refreshAuth(fresh){
+  let data;try{data=await fetch('/api/auth-status'+(fresh?'?fresh=1':'')).then(r=>r.json());}catch(e){return;}
+  if(!data||!Array.isArray(data.backends))return;
+  AUTHSTATUS=data;renderAuth();paint();}
+async function startSignIn(id,btn){
+  const known={cursor:1,claude:1,codex:1,chatgpt:1};
+  if(!known[id])return;
+  btn.disabled=true;
+  let r;try{r=await post('/api/account',{service:id,action:'login'});}
+  catch(e){r={error:'Could not start sign-in.'};}
+  if(!r||r.error){
+    btn.disabled=false;
+    const row=authOf(id);
+    const cmd=(row&&row.sign_in_command)||(id==='chatgpt'?'Continue with ChatGPT in Accounts':'');
+    const block=btn.closest('.authblock');
+    if(block&&cmd){
+      let note=block.querySelector('.authcmd');
+      if(!note){note=document.createElement('div');note.className='authcmd';block.appendChild(note);}
+      note.textContent=cmd;}
+    else if(r&&r.error)alert(r.error);
+    return;}
+  openAccounts();}
+$('#authrow').addEventListener('click',e=>{const btn=e.target.closest('[data-signin]');if(!btn||btn.disabled)return;startSignIn(btn.dataset.signin,btn);});
+
 // ===== Accounts =====
 let ACC={},ACCLOADED=false,accJSON='',accTimer=null;const codes={};
 const ready=b=>{const a=ACC[SVC[b]];return !!(a&&a.installed&&a.logged_in);};
@@ -618,6 +665,9 @@ async function refreshAccounts(fresh){
   ACC=Object.fromEntries(list.map(a=>[a.id,a]));
   if(ACC.chatgpt&&ACC.chatgpt.logged_in&&!wasChat){delete modelCache.chatgpt;if(S.backend==='chatgpt'||activeChoice().includes('chatgpt'))loadModelsFor('chatgpt');}
   markBackends();
+  const running=list.some(a=>a.job&&a.job.state==='running');
+  if(running)authJobSeen=true;
+  else if(authJobSeen){authJobSeen=false;refreshAuth(true);}
   const j=JSON.stringify(list);if(j!==accJSON){accJSON=j;renderAccounts(list);}
   clearTimeout(accTimer);
   if($('#acc').open)accTimer=setTimeout(()=>refreshAccounts(),list.some(a=>a.job&&a.job.state==='running')?1500:15000);
@@ -676,7 +726,7 @@ function renderAccounts(list){
       +notice+'<div class="row">'+btns+'</div>'+job+'</div>';}).join('');}
 $('#acclist').addEventListener('input',e=>{if(e.target.id==='ollamaurl')ollamaTyped=e.target.value;if(e.target.id&&e.target.id.startsWith('code_'))codes[e.target.id.slice(5)]=e.target.value;});
 $('#acclist').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id&&e.target.id.startsWith('code_')){e.preventDefault();e.target.nextElementSibling.click();}});
-function ollamaRefresh(){delete modelCache.ollama;if(S.backend==='ollama')loadModels();accJSON='';return refreshAccounts(true);}
+function ollamaRefresh(){delete modelCache.ollama;if(S.backend==='ollama')loadModels();accJSON='';refreshAuth(true);return refreshAccounts(true);}
 $('#acclist').addEventListener('submit',async e=>{if(e.target.id!=='ollamaform')return;e.preventDefault();
   const r=await post('/api/settings',{settings:{ollama_url:$('#ollamaurl').value.trim()}});if(r.error)alert(r.error);
   ollamaTyped=null;ollamaRefresh();});
@@ -718,7 +768,7 @@ $('#updatebtn').onclick=async()=>{
 refreshUpdate();
 setInterval(refreshUpdate,60000);
 $('#accbtn').onclick=openAccounts;
-$('#acc').addEventListener('close',()=>{clearTimeout(accTimer);refreshAccounts(true);});
+$('#acc').addEventListener('close',()=>{clearTimeout(accTimer);refreshAccounts(true);refreshAuth(true);});
 
 
 // ===== Usage =====
@@ -798,6 +848,9 @@ document.addEventListener('click',e=>{
   post('/api/open',{url:a.dataset.href});
 });
 fetch('/api/status').then(r=>r.json()).then(s=>{S.home=s.home;showVersion(s);paint();loadModels();});
+renderAuth();
+refreshAuth(false);
+setInterval(()=>refreshAuth(false),60000);
 fetch('/api/settings').then(r=>r.json()).then(renderObsidian);
 fetch('/api/chats').then(r=>r.json()).then(renderChatList);
 async function refreshChats(){

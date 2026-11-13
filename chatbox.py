@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts
 import attachments
+import authstatus
 import chatgpt
 import folderpick
 import memory
@@ -419,6 +420,16 @@ def list_models(backend):
 
 
 ACCOUNTS = accounts.Accounts(find)
+
+
+def _account_job_done(job):
+    # Sign-in finishes after the HTTP call returns. Drop the cheap cache then,
+    # so the next status read is not the "signed out" answer from a minute ago.
+    accounts.Accounts._job_done(ACCOUNTS, job)
+    authstatus.invalidate()
+
+
+ACCOUNTS._job_done = _account_job_done
 MEMORY = memory.Store(DATA_DIR)
 USAGE = usagemod.Log(DATA_DIR)
 OLLAMA = ollama.Sessions(DATA_DIR)
@@ -426,6 +437,16 @@ OLLAMA = ollama.Sessions(DATA_DIR)
 
 def ollama_url():
     return MEMORY.settings()["ollama_url"]
+
+
+def auth_status_payload(fresh=False):
+    """Installed and signed-in, per assistant. Cached about 60s. No tokens."""
+    return authstatus.snapshot(
+        fresh=bool(fresh),
+        find=find,
+        account_path=os.path.join(DATA_DIR, "chatgpt", "account.json"),
+        ollama_url=ollama_url(),
+    )
 
 
 PLAN_PROMPT = (
@@ -874,6 +895,9 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             chat = load_chat(m.group(1))
             return self._send(200 if chat else 404, json.dumps(chat or {"error": "not found"}))
+        if self.path.split("?", 1)[0] == "/api/auth-status":
+            return self._send(200, json.dumps(auth_status_payload("fresh=1" in self.path)),
+                              headers={"Cache-Control": "no-store"})
         if self.path.startswith("/api/accounts"):
             return self._send(200, json.dumps(ACCOUNTS.status(fresh="fresh=1" in self.path)
                                               + [chatgpt.status(), ollama.status(ollama_url())]))
