@@ -18,6 +18,8 @@ const ICON={copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
   check:'<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12l5 5 9-10"/></svg>',
   plan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>',
   trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+  more:'<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18" cy="12" r="1.7"/></svg>',
+  plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   up:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   stop:'<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>'};
 const inflight=new Map();
@@ -79,16 +81,12 @@ function blocks(text){
 function scrollDown(){const sc=$('#scroll');sc.scrollTop=sc.scrollHeight;}
 let PROJECTS=[];
 function renderProject(){
-  const sel=$('#projectpick');if(!sel)return;
-  const show=!!VAULT;sel.hidden=!show;if(!show)return;
-  const current=CHAT&&CHAT.project||'';
-  let html='<option value="">No project</option>';
-  const names=PROJECTS.map(p=>p.name);
-  if(current&&names.indexOf(current)<0)names.push(current);
-  names.forEach(name=>{html+='<option value="'+esc(name)+'">'+esc(name)+'</option>';});
-  html+='<option value="__new__">New project…</option>';
-  const focus=document.activeElement===sel;
-  if(!focus){sel.innerHTML=html;sel.value=current||'';}
+  const el=$('#projectcrumb');if(!el)return;
+  const name=CHAT&&CHAT.project||'';
+  if(!VAULT&&!name){el.hidden=true;el.textContent='';return;}
+  el.hidden=false;
+  el.textContent=name||'No project';
+  el.title=name?('Project · '+name):'No project';
 }
 function setEmpty(){const e=!CHAT.items.length;$('#main').classList.toggle('is-empty',e);$('#suggest').hidden=!e;
   $('#title').textContent=e?'':(CHAT.title||'New chat');renderProject();}
@@ -155,37 +153,208 @@ function saveChat(){if(!CHAT.items.some(i=>i.r==='you'))return;
     if(row){CHAT.updated=row.updated;if(!CHAT.project_lock&&row.project!==undefined)CHAT.project=row.project||'';}
     renderChatList(list);renderProject();},250);
   setEmpty();}
+let CHATS=[],CHATS_LOADED=false,CHAT_QUERY='',menuEl=null;
+const COLLAPSE_KEY='proj-collapsed';
+function collapsedNames(){try{const v=JSON.parse(store.get(COLLAPSE_KEY)||'[]');return new Set(Array.isArray(v)?v.map(String):[]);}catch(e){return new Set();}}
+function writeCollapsed(set){store.set(COLLAPSE_KEY,JSON.stringify([...set]));}
+function projectNames(){
+  const names=PROJECTS.map(p=>p.name).filter(Boolean);
+  CHATS.forEach(c=>{const p=c.project||'';if(p&&names.indexOf(p)<0)names.push(p);});
+  return names;}
+function chatRow(c){
+  return '<div class="chatitem'+(CHAT&&c.id===CHAT.id?' cur':'')+'" draggable="true" data-id="'+esc(c.id)+'">'
+    +'<span class="bdot" style="background:'+color(c.backend||'claude')+'"></span><span class="t">'+esc(c.title||'Untitled')+'</span>'
+    +'<button class="icon more" type="button" title="Chat actions" aria-label="Chat actions">'+ICON.more+'</button>'
+    +'<button class="icon del" type="button" title="Delete chat">'+ICON.trash+'</button></div>';}
 function renderChatList(list){
-  if(!Array.isArray(list))return;
-  const now=new Date(),day=86400000,start=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime();
-  const groups=[['Today',c=>c.updated*1000>=start],['Yesterday',c=>c.updated*1000>=start-day],['Previous 7 days',c=>c.updated*1000>=start-7*day],['Previous 30 days',c=>c.updated*1000>=start-30*day],['Older',()=>true]];
-  const used=new Set();let h='';
-  for(const [name,test] of groups){const g=list.filter(c=>!used.has(c.id)&&test(c));g.forEach(c=>used.add(c.id));
-    if(g.length)h+='<div class="group">'+name+'</div>'+g.map(c=>'<div class="chatitem'+(CHAT&&c.id===CHAT.id?' cur':'')+'" data-id="'+c.id+'"><span class="bdot" style="background:'+color(c.backend||'claude')+'"></span><span class="t">'+esc(c.title||'Untitled')+'</span><button class="icon del" type="button" title="Delete chat">'+ICON.trash+'</button></div>').join('');}
-  $('#chatlist').innerHTML=h||'<div class="side-empty">Your chats will show up here.</div>';}
-$('#chatlist').addEventListener('click',async e=>{const it=e.target.closest('.chatitem');if(!it)return;const id=it.dataset.id;
-  if(e.target.closest('.del')){if(!confirm('Delete this chat?'))return;renderChatList(await post('/api/chats',{action:'delete',id}));if(CHAT.id===id)startNew();return;}
+  if(Array.isArray(list)){CHATS=list;CHATS_LOADED=true;}
+  else if(!CHATS_LOADED)return;
+  const nav=$('#chatlist');if(!nav)return;
+  const top=nav.scrollTop;
+  const q=CHAT_QUERY.trim().toLowerCase();
+  const closed=collapsedNames();
+  const names=projectNames();
+  const groups=[{key:'',label:'Chats',tip:'No project'}].concat(names.map(n=>({key:n,label:n,tip:n})));
+  let h='';
+  if(!q&&!names.length&&!CHATS.length)h='<div class="side-empty">Your chats will show up here.</div>';
+  else groups.forEach(g=>{
+    let rows=CHATS.filter(c=>(c.project||'')===g.key);
+    rows.sort((a,b)=>(b.updated||0)-(a.updated||0)||String(a.title||'').localeCompare(String(b.title||'')));
+    const named=!!(q&&g.key&&g.key.toLowerCase().includes(q));
+    if(q){
+      const hit=rows.filter(c=>named||String(c.title||'').toLowerCase().includes(q));
+      if(!hit.length&&!named)return;
+      rows=hit;}
+    if(!g.key&&!rows.length&&q)return;
+    const shut=!q&&closed.has(g.key);
+    const actions=g.key?'<button class="icon add" type="button" title="New chat in '+esc(g.label)+'" aria-label="New chat in '+esc(g.label)+'">'+ICON.plus+'</button>'
+      +'<button class="icon more" type="button" title="Project actions" aria-label="Project actions">'+ICON.more+'</button>':'';
+    h+='<section class="proj'+(shut?' collapsed':'')+'" data-project="'+esc(g.key)+'">'
+      +'<div class="proj-row" title="'+esc(g.tip)+'"><button type="button" class="twist" aria-expanded="'+(shut?'false':'true')+'" title="'+(shut?'Expand':'Collapse')+'">'+ICON.chev+'</button>'
+      +'<span class="pname">'+esc(g.label)+'</span><span class="count">'+rows.length+'</span>'+actions+'</div>'
+      +'<div class="proj-chats">'+rows.map(chatRow).join('')+'</div></section>';});
+  if(!h)h='<div class="side-empty">'+(q?'No matching chats.':'Your chats will show up here.')+'</div>';
+  nav.innerHTML=h;nav.scrollTop=top;}
+function closeMenu(){if(menuEl){menuEl.remove();menuEl=null;}}
+function showMenu(html,x,y){
+  closeMenu();
+  const m=document.createElement('div');m.className='ctx';m.innerHTML=html;
+  m.addEventListener('click',e=>{
+    const b=e.target.closest('button');if(!b)return;
+    e.stopPropagation();
+    const act=b.dataset.act,id=b.dataset.id,project=b.getAttribute('data-project');
+    closeMenu();
+    if(act==='move')moveChat(id,project||'');
+    else if(act==='delete-chat')deleteChat(id);
+    else if(act==='rename')renameProject(project||'');
+    else if(act==='delete-project')deleteProject(project||'');});
+  m.style.visibility='hidden';
+  document.body.appendChild(m);
+  const r=m.getBoundingClientRect();
+  m.style.left=Math.max(8,Math.min(x,innerWidth-r.width-8))+'px';
+  m.style.top=Math.max(8,Math.min(y,innerHeight-r.height-8))+'px';
+  m.style.visibility='visible';
+  menuEl=m;}
+function openChatMenu(id,x,y){
+  const chat=CHATS.find(c=>c.id===id);
+  const current=chat&&chat.project||'';
+  let html='<div class="mh">Move to project</div>';
+  [''].concat(projectNames()).forEach(name=>{
+    const on=name===current;
+    html+='<button type="button" data-act="move" data-id="'+esc(id)+'" data-project="'+esc(name)+'"><span class="tick">'+(on?ICON.check:'')+'</span>'+esc(name||'No project')+'</button>';});
+  html+='<button type="button" class="danger" data-act="delete-chat" data-id="'+esc(id)+'">Delete chat</button>';
+  showMenu(html,x,y);}
+function openProjectMenu(name,x,y){
+  if(!name)return;
+  showMenu('<button type="button" data-act="rename" data-project="'+esc(name)+'">Rename</button>'
+    +'<button type="button" class="danger" data-act="delete-project" data-project="'+esc(name)+'">Delete project</button>',x,y);}
+function toggleCollapsed(name){
+  const set=collapsedNames();
+  if(set.has(name))set.delete(name);else set.add(name);
+  writeCollapsed(set);renderChatList();}
+async function deleteChat(id){
+  if(!confirm('Delete this chat?'))return;
+  renderChatList(await post('/api/chats',{action:'delete',id}));
+  if(CHAT&&CHAT.id===id)startNew();}
+async function moveChat(id,project){
+  project=project||'';
+  const row=CHATS.find(c=>c.id===id);
+  if(row&&(row.project||'')===project)return;
+  const set=collapsedNames();
+  if(set.has(project)){set.delete(project);writeCollapsed(set);}
+  const prev=row?(row.project||''):'';
+  if(row)row.project=project;
+  const open=CHAT&&CHAT.id===id;
+  if(open){CHAT.project=project;CHAT.project_lock=true;}
+  renderChatList();renderProject();
+  if(open){saveChat();return;}
+  const c=await fetch('/api/chats/'+id).then(r=>r.json()).catch(()=>null);
+  if(!c||c.error){if(row)row.project=prev;renderChatList();renderProject();return;}
+  c.project=project;c.project_lock=true;
+  const list=await post('/api/chats',{action:'save',chat:c});
+  if(!Array.isArray(list)){if(row)row.project=prev;if(list&&list.error)alert(list.error);renderChatList();renderProject();return;}
+  renderChatList(list);renderProject();}
+async function projectAct(body){
+  const r=await post('/api/projects',body);
+  if(r&&r.projects)PROJECTS=r.projects;
+  if(r&&Object.prototype.hasOwnProperty.call(r,'vault'))VAULT=r.vault;
+  renderProject();
+  const list=await fetch('/api/chats').then(x=>x.json()).catch(()=>null);
+  if(Array.isArray(list))renderChatList(list);else renderChatList();
+  if(r&&r.error)alert(r.error);
+  return r;}
+async function createProject(){
+  const name=prompt('Project name');
+  if(!name||!name.trim())return;
+  const neu=name.trim();
+  const r=await projectAct({action:'create',name:neu});
+  if(r&&!r.error){const set=collapsedNames();if(set.has(neu)){set.delete(neu);writeCollapsed(set);renderChatList();}}}
+async function renameProject(name){
+  const next=prompt('Rename project',name);
+  if(next===null)return;
+  const neu=next.trim();
+  if(!neu||neu===name)return;
+  const r=await projectAct({action:'rename',name:name,to:neu});
+  if(!r||r.error)return;
+  const set=collapsedNames();
+  if(set.has(name)){set.delete(name);set.add(neu);writeCollapsed(set);}
+  if(CHAT&&CHAT.project===name){CHAT.project=neu;CHAT.project_lock=true;}
+  renderProject();renderChatList();}
+async function deleteProject(name){
+  const n=CHATS.filter(c=>(c.project||'')===name).length;
+  const moved=n?(n+' chat'+(n===1?'':'s')+' will move to No project. '):'Its chats will move to No project. ';
+  if(!confirm('Delete project “'+name+'”? '+moved+'Notes in the vault are not deleted.'))return;
+  clearTimeout(saveTimer);
+  const current=!!(CHAT&&CHAT.project===name);
+  const pending=current&&CHAT.items.some(i=>i.r==='you');
+  const r=await projectAct({action:'delete',name:name});
+  if(r&&!r.error&&current){CHAT.project='';CHAT.project_lock=true;renderProject();saveChat();}
+  else if(pending)saveChat();}
+$('#chatlist').addEventListener('click',async e=>{
+  const more=e.target.closest('.more'),add=e.target.closest('.add');
+  const row=e.target.closest('.proj-row');
+  if(row&&!e.target.closest('.chatitem')){
+    e.stopPropagation();
+    const name=row.closest('.proj').dataset.project||'';
+    if(more){const box=more.getBoundingClientRect();openProjectMenu(name,box.left,box.bottom+4);return;}
+    if(add){startNew(name);return;}
+    toggleCollapsed(name);return;}
+  const it=e.target.closest('.chatitem');if(!it)return;const id=it.dataset.id;
+  if(more){e.stopPropagation();const box=more.getBoundingClientRect();openChatMenu(id,box.left,box.bottom+4);return;}
+  if(e.target.closest('.del')){e.stopPropagation();deleteChat(id);return;}
   if(S.busy){note('Stop the current reply before opening another chat.');return;}
   const c=await fetch('/api/chats/'+id).then(r=>r.json());if(c.error)return;
   CHAT={...newChatState(),...c,sessions:{...fresh(),...c.sessions},ctx:{...fresh(),...c.ctx},sent:{...fresh(),...c.sent}};
-  renderThread();
+  const set=collapsedNames();
+  if(set.has(c.project||'')){set.delete(c.project||'');writeCollapsed(set);}
+  renderChatList();renderThread();
   if(c.workdir){S.workdir=c.workdir;store.set('workdir',c.workdir);}
   if(c.backend&&ready(c.backend))setBackend(c.backend,true);paint();
-  document.querySelectorAll('.chatitem').forEach(x=>x.classList.toggle('cur',x.dataset.id===id));
   if(innerWidth<760)$('#app').classList.add('noside');scrollDown();$('#msg').focus();});
-function startNew(){if(S.busy)return;CHAT=newChatState();thread.innerHTML='';$('#main').classList.remove('comparing');setEmpty();
-  document.querySelectorAll('.chatitem').forEach(x=>x.classList.remove('cur'));$('#msg').focus();}
-$('#newchat').onclick=startNew;
+$('#chatlist').addEventListener('contextmenu',e=>{
+  const it=e.target.closest('.chatitem');
+  if(it){e.preventDefault();openChatMenu(it.dataset.id,e.clientX,e.clientY);return;}
+  const proj=e.target.closest('.proj');
+  if(proj&&proj.dataset.project){e.preventDefault();openProjectMenu(proj.dataset.project,e.clientX,e.clientY);}});
+$('#chatlist').addEventListener('dragstart',e=>{
+  const it=e.target.closest('.chatitem');
+  if(!it||e.target.closest('button')){e.preventDefault();return;}
+  e.dataTransfer.setData('text/plain',it.dataset.id);
+  e.dataTransfer.effectAllowed='move';
+  it.classList.add('dragging');});
+$('#chatlist').addEventListener('dragover',e=>{
+  const proj=e.target.closest('.proj');if(!proj)return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect='move';
+  document.querySelectorAll('.proj.drop').forEach(el=>{if(el!==proj)el.classList.remove('drop');});
+  proj.classList.add('drop');});
+$('#chatlist').addEventListener('drop',e=>{
+  const proj=e.target.closest('.proj');if(!proj)return;
+  e.preventDefault();
+  const id=e.dataTransfer.getData('text/plain');
+  document.querySelectorAll('.drop,.dragging').forEach(el=>el.classList.remove('drop','dragging'));
+  if(id)moveChat(id,proj.dataset.project||'');});
+$('#chatlist').addEventListener('dragend',()=>{document.querySelectorAll('.drop,.dragging').forEach(el=>el.classList.remove('drop','dragging'));});
+$('#chatlist').addEventListener('scroll',closeMenu);
+function startNew(project){if(S.busy)return;CHAT=newChatState();
+  if(project){CHAT.project=project;CHAT.project_lock=true;}
+  thread.innerHTML='';$('#main').classList.remove('comparing');setEmpty();
+  document.querySelectorAll('.chatitem').forEach(x=>x.classList.remove('cur'));renderProject();$('#msg').focus();}
+$('#newchat').onclick=()=>startNew();
+$('#newproject').onclick=createProject;
+$('#chatsearch').addEventListener('input',()=>{CHAT_QUERY=$('#chatsearch').value||'';renderChatList();});
 $('#sideclose').onclick=()=>{$('#app').classList.add('noside');store.set('noside','1');};
 $('#sideopen').onclick=()=>{$('#app').classList.remove('noside');store.set('noside','');};
 if(store.get('noside')==='1'||innerWidth<760)$('#app').classList.add('noside');
 
 // ===== pickers (assistant / mode / model) =====
 function pick(id,btnHTML,itemsHTML){const p=$(id);p.querySelector('.pickbtn').innerHTML=btnHTML;p.querySelector('.menu').innerHTML=itemsHTML;}
-document.addEventListener('click',e=>{const pb=e.target.closest('.pickbtn');const inside=e.target.closest('.pick');
+document.addEventListener('click',e=>{
+  if(menuEl&&!e.target.closest('.ctx'))closeMenu();
+  const pb=e.target.closest('.pickbtn');const inside=e.target.closest('.pick');
   const p=pb&&pb.parentElement.classList.contains('pick')?pb.parentElement:null;
   document.querySelectorAll('.pick.open').forEach(x=>{if(x!==p&&x!==inside)x.classList.remove('open');});if(p)p.classList.toggle('open');});
-document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.pick.open').forEach(x=>x.classList.remove('open'));});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeMenu();document.querySelectorAll('.pick.open').forEach(x=>x.classList.remove('open'));}});
 function chosen(){
   let list=null;try{list=JSON.parse(store.get('backends')||'null');}catch(e){list=null;}
   if(!Array.isArray(list)||!list.length) list=[S.backend];
@@ -487,7 +656,7 @@ function renderSettings(p){
     if(host&&adv.parentElement!==host) host.appendChild(adv);
   }
   const banner=$('#notebanner'); if(banner) banner.hidden=!notes.banner;
-  PROJECTS=p.projects||[];renderProject();
+  PROJECTS=p.projects||[];renderProject();if(CHATS_LOADED)renderChatList();
   const status=$('#notesstatus');
   status.textContent=notes.status||'';
   status.className='notesstatus'+(notes.fallback?' warn':(mode==='off'?' muted':''));
@@ -561,15 +730,6 @@ $('#choosevault').onclick=async()=>{
     btn.disabled=false; btn.textContent='Change…';
   }
 };
-$('#projectpick').onchange=()=>{
-  let value=$('#projectpick').value;
-  if(value==='__new__'){
-    const name=prompt('Project name');
-    if(!name||!name.trim()){renderProject();return;}
-    value=name.trim();
-  }
-  CHAT.project=value;CHAT.project_lock=true;saveChat();renderProject();
-};
 $('#notebanner').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
 $('#opennotes').onclick=async()=>{
   const r=await post('/api/notes',{action:'open'});
@@ -586,7 +746,7 @@ document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>b.closest('di
 // ===== Obsidian =====
 let VAULT=null;
 function renderObsidian(p){
-  VAULT=p.vault;PROJECTS=p.projects||[];$('#savebtn').hidden=!VAULT;renderProject();
+  VAULT=p.vault;PROJECTS=p.projects||[];$('#savebtn').hidden=!VAULT;renderProject();if(CHATS_LOADED)renderChatList();
   let h='<div class="sec-h"><b>Obsidian</b><span class="pill '+(VAULT?'ok">Connected · '+esc(VAULT.name)+' · '+VAULT.notes+' notes':'bad">Not connected')+'</span></div>'
     +'<div class="muted">Long-term memory shared by every assistant. Your vault stays on this computer; no sign-in needed. Related notes are sent only to the assistant you chat with.</div>';
   if(VAULT)h+='<code class="path">'+esc(VAULT.path)+'</code><div class="row"><button class="ghost" data-obs="disconnect">Disconnect</button></div>';

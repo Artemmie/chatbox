@@ -722,6 +722,89 @@ def delete_chat(cid):
         pass
 
 
+def _notes_vault():
+    try:
+        return MEMORY.vault()
+    except Exception:
+        return None
+
+
+def _require_notes():
+    vault = _notes_vault()
+    if not vault:
+        raise ValueError("Turn on notes storage in Settings before changing projects.")
+    return vault
+
+
+def _sync_owns(name):
+    """True when this project folder is the sync root. Renaming it would orphan notes."""
+    root = _sync_root()
+    vault = _notes_vault()
+    if not root or not vault or not name:
+        return False
+    folder = os.path.join(vault.path, vault.projects_root(), name)
+    try:
+        return os.path.realpath(root) == os.path.realpath(folder)
+    except OSError:
+        return False
+
+
+def _reassign_chats(old, new):
+    """Point every chat in `old` at `new`. '' moves them to No project. Notes are moved, not deleted."""
+    old = old or ""
+    new = vaultmod.safe_project_name(new) if new else ""
+    ids = [row.get("id") for row in list_chats()
+           if row.get("id") and (row.get("project") or "") == old]
+    for cid in ids:
+        chat = load_chat(cid)
+        if not chat:
+            continue
+        chat["project"] = new
+        chat["project_lock"] = True
+        save_chat(chat)
+
+
+def create_project(name):
+    vault = _require_notes()
+    safe = vaultmod.safe_project_name(name)
+    if not safe:
+        raise ValueError("That name can't be used as a project.")
+    if not vaultmod.ensure_project(vault.path, safe):
+        raise ValueError("That project could not be created.")
+    return safe
+
+
+def rename_project(old, new):
+    vault = _require_notes()
+    old_s = vaultmod.safe_project_name(old)
+    new_s = vaultmod.safe_project_name(new)
+    if not old_s or not new_s:
+        raise ValueError("That name can't be used as a project.")
+    if old_s == new_s:
+        return new_s
+    if _sync_owns(old_s):
+        raise ValueError("That project is the sync folder. Change it in Settings instead.")
+    vaultmod.rename_project(vault.path, old_s, new_s)
+    _reassign_chats(old_s, new_s)
+    return new_s
+
+
+def delete_project(name):
+    """Unlink chats to No project and hide the project. Notes are not deleted."""
+    vault = _require_notes()
+    safe = vaultmod.safe_project_name(name)
+    if not safe:
+        raise ValueError("That name can't be used as a project.")
+    if _sync_owns(safe):
+        raise ValueError("That project is the sync folder. Change it in Settings instead.")
+    _reassign_chats(safe, "")
+    try:
+        vaultmod.retire_project(vault.path, safe)
+    except ValueError:
+        return safe
+    return safe
+
+
 def settings_payload():
     try:
         MEMORY.ensure_notes_choice()
@@ -935,6 +1018,20 @@ class Handler(BaseHTTPRequestHandler):
                         MEMORY.clear()
                     else:
                         raise ValueError("Unknown action")
+                return self._send(200, json.dumps(settings_payload()))
+            except Exception as e:
+                return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+        if self.path == "/api/projects":
+            try:
+                act = req.get("action")
+                if act == "create":
+                    create_project(req.get("name") or "")
+                elif act == "rename":
+                    rename_project(req.get("name") or "", req.get("to") or "")
+                elif act == "delete":
+                    delete_project(req.get("name") or "")
+                else:
+                    raise ValueError("Unknown action")
                 return self._send(200, json.dumps(settings_payload()))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))

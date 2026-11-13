@@ -40,6 +40,9 @@ INDEX_ITEM = re.compile(
 )
 CHATS_BEGIN = "%% chatbox:chats %%"
 CHATS_END = "%% /chatbox:chats %%"
+# A retired project stays on disk. The marker hides it from the project list.
+RETIRED_MARK = "%% chatbox:retired %%"
+RETIRED_FILE = ".chatbox-retired"
 _CHATS_BEGIN = re.compile(r"%%\s*chatbox:chats\s*%%")
 _CHATS_END = re.compile(r"%%\s*/chatbox:chats\s*%%")
 MAX_HUB_CHATS = 20
@@ -517,6 +520,8 @@ class Vault:
                 except OSError:
                     hub_text = ""
                 label, blurb = described.get(stem, ("", ""))
+                if RETIRED_MARK in hub_text:
+                    continue
                 projects.append({
                     "name": stem,
                     "folder": f"{root}/{stem}",
@@ -529,6 +534,8 @@ class Vault:
                 continue
             if not os.path.isdir(folder):
                 continue
+            if os.path.isfile(os.path.join(folder, RETIRED_FILE)):
+                continue
             hub_rel = f"{root}/{name}/{name}.md"
             hub_abs = os.path.join(folder, name + ".md")
             hub_text = ""
@@ -540,6 +547,8 @@ class Vault:
                     hub_text = ""
             label, blurb = described.get(name, ("", ""))
             description = blurb or _hub_description(hub_text)
+            if RETIRED_MARK in hub_text:
+                continue
             projects.append({
                 "name": name,
                 "folder": f"{root}/{name}",
@@ -978,6 +987,7 @@ def ensure_project(vault_path, name, description=None):
     name = safe_project_name(name)
     if not name or not vault_path or not os.path.isdir(vault_path):
         return None
+    _unretire(vault_path, name)
     ensure_layout(vault_path)
     vault = Vault(vault_path)
     root = vault.projects_root()
@@ -1030,6 +1040,221 @@ def _ensure_index_line(index_path, name, description):
     if text and not text.endswith("\n"):
         text += "\n"
     _atomic(index_path, text + line)
+
+
+def _remove_index_line(vault_path, name):
+    """Drop the project's bullet from the index. The project note itself stays."""
+    root = Vault(vault_path).projects_root()
+    index_path = os.path.join(vault_path, root, root + ".md")
+    try:
+        with open(index_path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return
+    kept = []
+    changed = False
+    for line in text.splitlines():
+        matched = INDEX_ITEM.match(line)
+        if matched and _link_target(matched.group(1)) == name:
+            changed = True
+            continue
+        kept.append(line)
+    if not changed:
+        return
+    body = "\n".join(kept)
+    if text.endswith("\n"):
+        body += "\n"
+    backup_file(vault_path, index_path)
+    _atomic(index_path, body)
+
+
+def _unretire(vault_path, name):
+    """Make a retired project listable again. Notes are left as they are."""
+    name = safe_project_name(name)
+    if not name or not vault_path or not os.path.isdir(vault_path):
+        return
+    root = Vault(vault_path).projects_root()
+    base = os.path.join(vault_path, root)
+    marker = os.path.join(base, name, RETIRED_FILE)
+    if os.path.isfile(marker):
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+    for path in (os.path.join(base, name, name + ".md"), os.path.join(base, name + ".md")):
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        if RETIRED_MARK not in text:
+            continue
+        backup_file(vault_path, path)
+        lines = [line for line in text.splitlines() if line.strip() != RETIRED_MARK]
+        body = "\n".join(lines)
+        if text.endswith("\n") or body:
+            body += "\n"
+        _atomic(path, body)
+    _MAPS.pop(os.path.abspath(vault_path), None)
+
+
+def _swap_project_target(target, root, old, new):
+    full_old = root + "/" + old
+    full_new = root + "/" + new
+    hub_old = full_old + "/" + old
+    hub_new = full_new + "/" + new
+    if target == hub_old:
+        return hub_new
+    if target == full_old:
+        return full_new
+    prefix = full_old + "/"
+    if target.startswith(prefix):
+        rest = target[len(prefix):]
+        if rest == old or rest.startswith(old + "/"):
+            rest = new + rest[len(old):]
+        return full_new + "/" + rest
+    if target == old:
+        return new
+    return target
+
+
+def _swap_project_links(text, root, old, new):
+    def repl(match):
+        target, anchor, alias = match.group(1), match.group(2) or "", match.group(3) or ""
+        updated = _swap_project_target(target, root, old, new)
+        if updated == target:
+            return match.group(0)
+        return "[[" + updated + anchor + alias + "]]"
+
+    return re.sub(r"\[\[([^\]|#]+)(#[^\]|]+)?(\|[^\]]+)?\]\]", repl, text)
+
+
+def _retitle_hub(text, old, new):
+    """Rename the hub's own heading when it is still the project name."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if line.strip() == "# " + old:
+            lines[index] = "# " + new
+        break
+    body = "\n".join(lines)
+    if text.endswith("\n"):
+        body += "\n"
+    return body
+
+
+def _rename_project_field(text, old, new):
+    """Update a chat note's project field. Leaves every other line alone."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return text
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            break
+        if not line.startswith("project:"):
+            continue
+        raw = line.split(":", 1)[1].strip()
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = raw.strip('"')
+        if str(value) == old:
+            lines[index] = "project: " + json.dumps(new, ensure_ascii=False)
+        break
+    body = "\n".join(lines)
+    if text.endswith("\n"):
+        body += "\n"
+    return body
+
+
+def _rewrite_project_mentions(vault_path, root, old, new, hub):
+    hub_abs = os.path.abspath(hub) if hub else ""
+    for path in _note_paths(vault_path):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        updated = _rename_project_field(_swap_project_links(text, root, old, new), old, new)
+        if hub_abs and os.path.abspath(path) == hub_abs:
+            updated = _retitle_hub(updated, old, new)
+        if updated != text:
+            backup_file(vault_path, path)
+            _atomic(path, updated)
+
+
+def rename_project(vault_path, old, new):
+    """Rename a project folder or note. Other notes move with the folder; none are deleted."""
+    old = safe_project_name(old)
+    new = safe_project_name(new)
+    if not old or not new:
+        raise ValueError("That name can't be used as a project.")
+    if old == new:
+        return new
+    if not vault_path or not os.path.isdir(vault_path):
+        raise ValueError("Turn on notes storage in Settings before changing projects.")
+    root = Vault(vault_path).projects_root()
+    base = os.path.join(vault_path, root)
+    old_lone = os.path.join(base, old + ".md")
+    old_folder = os.path.join(base, old)
+    new_lone = os.path.join(base, new + ".md")
+    new_folder = os.path.join(base, new)
+    if os.path.exists(new_lone) or os.path.exists(new_folder):
+        raise ValueError("A project with that name already exists.")
+    hub = None
+    if os.path.isdir(old_folder):
+        os.replace(old_folder, new_folder)
+        moved = os.path.join(new_folder, old + ".md")
+        hub = os.path.join(new_folder, new + ".md")
+        if os.path.isfile(moved) and os.path.abspath(moved) != os.path.abspath(hub):
+            os.replace(moved, hub)
+        elif not os.path.isfile(hub):
+            hub = None
+    elif os.path.isfile(old_lone):
+        os.replace(old_lone, new_lone)
+        hub = new_lone
+    else:
+        raise ValueError("That project isn't in the vault.")
+    _rewrite_project_mentions(vault_path, root, old, new, hub)
+    _MAPS.pop(os.path.abspath(vault_path), None)
+    return new
+
+
+def retire_project(vault_path, name):
+    """Hide a project from the list. Notes stay on disk; nothing is deleted.
+
+    A folder is hidden with a dotfile so every note inside it stays put.
+    A single project note keeps its text and gains one marker line.
+    """
+    name = safe_project_name(name)
+    if not name or not vault_path or not os.path.isdir(vault_path):
+        raise ValueError("That project isn't in the vault.")
+    root = Vault(vault_path).projects_root()
+    base = os.path.join(vault_path, root)
+    folder = os.path.join(base, name)
+    lone = os.path.join(base, name + ".md")
+    if os.path.isdir(folder):
+        marker = os.path.join(folder, RETIRED_FILE)
+        if not os.path.exists(marker):
+            _atomic(marker, "")
+    elif os.path.isfile(lone):
+        try:
+            with open(lone, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError as exc:
+            raise ValueError("That project isn't in the vault.") from exc
+        if RETIRED_MARK not in text:
+            backup_file(vault_path, lone)
+            if text and not text.endswith("\n"):
+                text += "\n"
+            _atomic(lone, text + "\n" + RETIRED_MARK + "\n")
+    else:
+        raise ValueError("That project isn't in the vault.")
+    _remove_index_line(vault_path, name)
+    _MAPS.pop(os.path.abspath(vault_path), None)
 
 
 def project_chats_dir(vault_path, name):
