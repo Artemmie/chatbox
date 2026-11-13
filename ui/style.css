@@ -101,6 +101,7 @@ main.is-empty .composer-wrap{padding-bottom:14vh}
 @keyframes b{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
 .err{color:var(--err);white-space:pre-wrap}
 .note{align-self:center;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;font-size:13px;color:var(--muted);background:transparent;border:1px solid var(--line);border-radius:999px;padding:4px 14px;max-width:100%}
+.note.mem{align-self:flex-start;margin-left:40px;font-size:12px;padding:3px 12px}
 .note button{border:0;background:transparent;color:var(--text);text-decoration:underline;cursor:pointer;font-size:13px;padding:0}
 .card{border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow);margin-left:40px}
 .card .ic{width:36px;height:36px;border-radius:10px;background:var(--code);display:grid;place-items:center;flex:none}

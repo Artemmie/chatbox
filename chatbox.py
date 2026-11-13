@@ -492,7 +492,8 @@ def _finish_result(req, result, notes, started):
         result["usage"] = USAGE.record(backend, req.get("mode", "ask"), model,
                                        "reply" in result, time.time() - started, result.get("usage"))
     if result.get("reply") is not None:
-        result["reply"], result["saved_memories"] = MEMORY.take_memories(result["reply"])
+        result["reply"], result["saved_memories"] = MEMORY.take_memories(
+            result["reply"], req.get("message", ""), notes)
         result["context_version"] = MEMORY.version()  # the assistant already knows what it saved
         result["notes_used"] = [{"path": n["path"], "title": n["title"]} for n in notes]
         if req.get("mode") == "plan" and result["reply"].strip():

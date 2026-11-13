@@ -28,12 +28,120 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("Be brief.", ctx)
         self.assertIn("Unity 6", ctx)
         self.assertIn("REMEMBER:", ctx)
+        self.assertIn("THIS message", ctx)
+        self.assertIn("vault notes", ctx)
+        self.assertIn("at most one", ctx.lower())
+        self.assertIn("most replies should have none", ctx.lower())
 
     def test_remember_lines_are_stripped(self):
-        reply, saved = self.store.take_memories("Hello.\nREMEMBER: prefers short answers\n")
+        reply, saved = self.store.take_memories(
+            "Hello.\nREMEMBER: prefers short answers\n",
+            "I prefer short answers")
         self.assertEqual(reply, "Hello.")
         self.assertEqual(saved[0]["text"], "prefers short answers")
         self.assertEqual(self.store.memories()[0]["source"], "assistant")
+
+    def test_vault_sourced_fact_is_rejected(self):
+        notes = [{"title": "Unity", "path": "notes/Unity.md",
+                  "text": "The arena project uses Unity 6 and C# for shelter placement."}]
+        user = "The arena project uses Unity 6 and C# for shelter placement."
+        reply, saved = self.store.take_memories(
+            "Right.\nREMEMBER: The arena project uses Unity 6 and C# for shelter placement.\n",
+            user, notes)
+        self.assertEqual(saved, [])
+        self.assertEqual(reply, "Right.")
+        self.assertEqual(self.store.memories(), [])
+        # The same words from the user, with nothing injected from the vault, are kept.
+        reply, saved = self.store.take_memories(
+            "Right.\nREMEMBER: The arena project uses Unity 6 and C# for shelter placement.\n",
+            user, [])
+        self.assertEqual([m["text"] for m in saved],
+                         ["The arena project uses Unity 6 and C# for shelter placement."])
+        self.assertNotIn("REMEMBER", reply)
+
+    def test_user_stated_preference_is_saved(self):
+        notes = [{"text": "The arena project uses Unity 6 and C# for shelter placement."}]
+        reply, saved = self.store.take_memories(
+            "Got it.\nREMEMBER: prefers brief replies\n",
+            "Please answer in short sentences. I prefer brief replies.",
+            notes)
+        self.assertEqual([m["text"] for m in saved], ["prefers brief replies"])
+        self.assertEqual(reply, "Got it.")
+        # A fact the user did not say (a file, a tool, or the model's own answer) is dropped.
+        reply, saved = self.store.take_memories(
+            "Berlin is cloudy.\nREMEMBER: lives in Berlin\n",
+            "What's the weather?")
+        self.assertEqual(saved, [])
+        self.assertEqual(reply, "Berlin is cloudy.")
+        self.assertEqual([m["text"] for m in self.store.memories()], ["prefers brief replies"])
+
+    def test_near_duplicate_memory_is_rejected(self):
+        self.store.add("I use Unity 6 and C#")
+        reply, saved = self.store.take_memories(
+            "Sure.\nREMEMBER: Uses Unity 6 and C#\n",
+            "Please remember that I use Unity 6 and C#")
+        self.assertEqual(saved, [])
+        self.assertEqual([m["text"] for m in self.store.memories()], ["I use Unity 6 and C#"])
+        self.assertEqual(reply, "Sure.")
+
+    def test_russian_text_is_casefolded(self):
+        user = unicodedata.normalize("NFD", "Я ПРЕДПОЧИТАЮ ответы на русском языке")
+        reply, saved = self.store.take_memories(
+            "Хорошо.\nREMEMBER: предпочитает ответы на русском языке\n", user)
+        self.assertEqual([m["text"] for m in saved], ["предпочитает ответы на русском языке"])
+        self.assertEqual(reply, "Хорошо.")
+        # A Cyrillic fact copied from the vault is rejected even when the user repeated it.
+        notes = [{"title": "Егор", "path": "People/Егор.md",
+                  "text": "Егор работает над проектом telegram-ai и пишет ботов."}]
+        reply, saved = self.store.take_memories(
+            "Да.\nREMEMBER: Егор работает над проектом telegram-ai\n",
+            "Егор работает над проектом telegram-ai", notes)
+        self.assertEqual(saved, [])
+        self.assertEqual(reply, "Да.")
+        self.assertEqual(len(self.store.memories()), 1)
+
+    def test_at_most_one_memory_per_reply(self):
+        reply, saved = self.store.take_memories(
+            "OK.\nREMEMBER: prefers short answers\nREMEMBER: wants replies in Russian\n",
+            "I prefer short answers and I want replies in Russian.")
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["text"], "prefers short answers")
+        self.assertEqual([m["text"] for m in self.store.memories()], ["prefers short answers"])
+        self.assertNotIn("REMEMBER", reply)
+        self.assertIn("OK.", reply)
+
+    def test_finish_result_passes_the_user_message_and_vault_notes(self):
+        box, _tmp = isolate()
+        notes = [{"path": "notes/Unity.md", "title": "Unity",
+                  "text": "The arena project uses Unity 6 and C# for shelter placement."}]
+        result = {"reply": "Noted.\nREMEMBER: The arena project uses Unity 6 and C# for shelter placement.\n"
+                           "REMEMBER: prefers short answers\n"}
+        req = {"backend": "claude", "mode": "ask",
+               "message": "The arena project uses Unity 6 and C# for shelter placement. "
+                          "I prefer short answers."}
+        out = box._finish_result(req, result, notes, 0)
+        self.assertNotIn("REMEMBER", out["reply"])
+        self.assertEqual([m["text"] for m in out["saved_memories"]], ["prefers short answers"])
+
+    def test_custom_instructions_are_not_saved_again(self):
+        self.store.update_settings({"instructions": "Answer in Russian."})
+        reply, saved = self.store.take_memories(
+            "OK.\nREMEMBER: Answer in Russian\n",
+            "Please answer in Russian from now on.")
+        self.assertEqual(saved, [])
+        self.assertEqual(reply, "OK.")
+        self.assertEqual(self.store.memories(), [])
+
+    def test_vault_undo_deletes_the_saved_line(self):
+        root = tempfile.mkdtemp()
+        self.store.connect_vault(root)
+        reply, saved = self.store.take_memories(
+            "Got it.\nREMEMBER: prefers short answers\n",
+            "I prefer short answers")
+        self.assertEqual(reply, "Got it.")
+        self.assertEqual(len(saved), 1)
+        self.store.delete(saved[0]["id"])
+        self.assertEqual(self.store.memories(), [])
 
     def test_memory_off_sends_nothing(self):
         self.store.add("secret fact")
