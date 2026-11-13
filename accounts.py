@@ -38,7 +38,7 @@ INSTALL = {
 SERVICES = {
     "cursor": {"name": "Cursor", "plan": "Cursor account (free or paid plan)", "exe": "cursor-agent"},
     "claude": {"name": "Claude", "plan": "Claude Pro or Max subscription", "exe": "claude"},
-    "codex": {"name": "Codex & ChatGPT", "plan": "ChatGPT account (Plus/Pro, or free with limits)",
+    "codex": {"name": "Codex", "plan": "ChatGPT account, used by the Codex coding agent (Plus/Pro, or free with limits)",
               "exe": "codex"},
 }
 
@@ -155,7 +155,7 @@ class Accounts:
         info = {"installed": bool(exe), "logged_in": False, "account": None, "source": None}
         if not exe:
             return info
-        if sid == "codex" and exe.endswith("resources/codex"):
+        if sid == "codex" and exe.replace("\\", "/").lower().endswith("resources/codex"):
             info["source"] = "built into the ChatGPT app"
         argv = {"cursor": [exe, "status"], "claude": [exe, "auth", "status"],
                 "codex": [exe, "login", "status"]}[sid]

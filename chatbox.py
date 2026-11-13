@@ -12,23 +12,33 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import accounts
+import attachments
+import chatgpt
 import memory
 import ollama
+import streaming
+import sync as syncmod
+import update as updatemod
 import usage as usagemod
 import vault as vaultmod
 
 HOME = os.path.expanduser("~")
-TIMEOUT = 600  # seconds per reply
+TIMEOUT = streaming.TOTAL_TIMEOUT  # seconds per reply; override with CHATBOX_TIMEOUT
 
 
 DATA_DIR = os.environ.get("CHATBOX_DATA", os.path.join(HOME, ".local/share/chatbox"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+CURRENT_PORT = None
+chatgpt.init(DATA_DIR, accounts.open_url)
 
 # Apps opened from the macOS Finder (or some Linux menus) get a short PATH, so add the
 # usual places the tools are installed to. The assistants' child processes inherit it.
@@ -40,6 +50,12 @@ os.environ["PATH"] = os.pathsep.join(_path + [d for d in _extra if os.path.isdir
 # otherwise use the app's copy from one of these places (or set CHATBOX_CODEX).
 CODEX_APP_CANDIDATES = [
     os.environ.get("CHATBOX_CODEX", ""),
+    # macOS app bundles (ChatGPT.app replaced the older Codex.app)
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    os.path.join(HOME, "Applications/ChatGPT.app/Contents/Resources/codex"),
+    "/Applications/Codex.app/Contents/Resources/codex",
+    os.path.join(HOME, "Applications/Codex.app/Contents/Resources/codex"),
+    # Linux packages and older layouts
     os.path.join(HOME, "Applications/chatgpt/usr/lib/chatgpt/resources/codex"),
     os.path.join(HOME, "Applications/ChatGPT/resources/codex"),
     "/opt/ChatGPT/resources/codex",
@@ -59,25 +75,17 @@ def find(cmd):
     return path
 
 
-# "ChatGPT" = Codex told to just chat, run read-only from an empty folder.
-CHATGPT_HOME = os.path.join(DATA_DIR, "chatgpt-home")
-CHATGPT_INSTRUCTIONS = ("You are ChatGPT, a friendly general-purpose assistant in a plain chat window. "
-                        "Do not run commands, read files or use tools; just answer conversationally.")
-
-
-def build_codex_command(message, session_id, mode, model, chat=False):
+def build_codex_command(message, session_id, mode, model):
     exe = find("codex")
     if not exe:
-        raise RuntimeError("Codex (from the ChatGPT app) is not installed.")
-    sandbox = "workspace-write" if mode == "agent" and not chat else "read-only"
+        raise RuntimeError("Codex is not installed.")
+    sandbox = "workspace-write" if mode == "agent" else "read-only"
     cmd = [exe, "exec"] + (["resume"] if session_id else [])
     # The ChatGPT app's older Codex needs an explicit model; a standalone one picks its own.
     model = model or (CODEX_DEFAULT_MODEL if CODEX_APP_PATH and exe == CODEX_APP_PATH else "")
     cmd += ["--json", "--skip-git-repo-check", "-c", f'sandbox_mode="{sandbox}"']
     if model:
         cmd += ["-m", model]
-    if chat:
-        cmd += ["-c", "developer_instructions=" + json.dumps(CHATGPT_INSTRUCTIONS)]
     if session_id:
         cmd.append(session_id)
     cmd.append(message)
@@ -86,42 +94,28 @@ def build_codex_command(message, session_id, mode, model, chat=False):
 
 def parse_codex(out):
     """Codex prints one JSON event per line; collect the thread id, last reply and any error."""
-    session_id, reply, error, usage = None, None, None, {}
+    parser = streaming.CodexParser()
     for line in out.splitlines():
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        t = ev.get("type")
-        if t == "thread.started":
-            session_id = ev.get("thread_id")
-        elif t == "item.completed" and ev.get("item", {}).get("type") == "agent_message":
-            reply = ev["item"].get("text", "")
-        elif t == "turn.completed":
-            u = ev.get("usage") or {}
-            usage = {"input": u.get("input_tokens", 0), "cache_read": u.get("cached_input_tokens", 0),
-                     "output": u.get("output_tokens", 0), "reasoning": u.get("reasoning_output_tokens", 0)}
-        elif t in ("error", "turn.failed"):
-            msg = ev.get("message") or ev.get("error", {}).get("message", "Error")
-            try:  # the message is often JSON from the server
-                msg = json.loads(msg)["error"]["message"]
-            except (ValueError, KeyError, TypeError):
-                pass
-            error = msg
-    if reply is not None:
-        return {"reply": reply, "session_id": session_id, "usage": usage}
-    return {"error": error, "session_id": session_id, "usage": usage} if error else None
+        parser.feed_line(line)
+    return parser.finish()
 
 
-def build_command(backend, message, session_id, mode, model):
-    """Return the CLI command for one turn. 'ask' = read-only, 'agent' = can edit files/run commands."""
-    if backend in ("codex", "chatgpt"):
-        return build_codex_command(message, session_id, mode, model, chat=backend == "chatgpt")
+def build_command(backend, message, session_id, mode, model, stream="full"):
+    """Return the CLI command for one turn. 'ask' = read-only, 'agent' = can edit files/run commands.
+
+    stream is 'full' (token deltas), 'basic' (one JSON event per message) or 'off'
+    (a single JSON result). Codex already streams events with --json, so stream is ignored there.
+    """
+    if backend == "codex":
+        return build_codex_command(message, session_id, mode, model)
     if backend == "cursor":
         exe = find("cursor-agent")
         if not exe:
             raise RuntimeError("cursor-agent is not installed.")
-        cmd = [exe, "-p", "--trust", "--output-format", "json"]
+        fmt = "json" if stream == "off" else "stream-json"
+        cmd = [exe, "-p", "--trust", "--output-format", fmt]
+        if stream == "full":
+            cmd.append("--stream-partial-output")
         if mode == "agent":
             cmd += ["--force"]
         else:
@@ -130,7 +124,12 @@ def build_command(backend, message, session_id, mode, model):
         exe = find("claude")
         if not exe:
             raise RuntimeError("claude is not installed.")
-        cmd = [exe, "-p", "--output-format", "json"]
+        fmt = "json" if stream == "off" else "stream-json"
+        cmd = [exe, "-p", "--output-format", fmt]
+        if stream != "off":
+            cmd.append("--verbose")  # stream-json stays quiet without it when stdout is not a terminal
+        if stream == "full":
+            cmd.append("--include-partial-messages")
         # Ask/Plan: may read files, anything needing permission is refused.
         # Agent: "auto" = edits plus commands that Claude's safety check approves.
         cmd += ["--permission-mode", "auto" if mode == "agent" else "dontAsk"]
@@ -144,64 +143,218 @@ def build_command(backend, message, session_id, mode, model):
     return cmd
 
 
+def json_usage(data):
+    """Token counts (and Claude's cost) from a claude / cursor-agent JSON result."""
+    return streaming.json_usage(data)
+
+
+BACKEND_NAMES = {"cursor": "Cursor", "claude": "Claude", "codex": "Codex",
+                 "chatgpt": "ChatGPT", "ollama": "Ollama"}
+_EXE = {"cursor": "cursor-agent", "claude": "claude", "codex": "codex", "chatgpt": "codex"}
+
+
+def _span(seconds):
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds} second{'s' if seconds != 1 else ''}"
+    minutes = max(1, seconds // 60)
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+
+def _timeout_message(exc, backend=None):
+    who = BACKEND_NAMES.get(backend, "The assistant")
+    if exc.kind == "start":
+        return (f"{who} produced no output for {_span(exc.seconds)}, so the request was stopped. "
+                "It may be stuck, or still starting up. Try again — or press Stop if it hangs.")
+    if exc.kind == "idle":
+        return (f"{who} went quiet for {_span(exc.seconds)}, so the request was stopped. It looked stuck.")
+    return (f"{who} did not finish within {_span(exc.seconds)}, so the request was stopped.")
+
+
+def preflight(backend):
+    """A clear error when the tool is missing or the cached sign-in says it is not connected.
+
+    A stale cache is ignored so a sign-in that just finished is not blocked.
+    """
+    if backend == "ollama":
+        return None
+    if backend == "chatgpt":
+        if not chatgpt.logged_in():
+            return ("ChatGPT is not signed in. Open Accounts (bottom left) and choose "
+                    "Continue with ChatGPT. That uses your ChatGPT plan — no API key.")
+        return None
+    if backend not in _EXE:
+        return None
+    name, exe = BACKEND_NAMES[backend], _EXE[backend]
+    if not find(exe):
+        return (f"{name} is not installed ({exe} was not found). "
+                "Open Accounts (bottom left) to install it, then try again.")
+    sid = backend
+    with ACCOUNTS.lock:
+        fresh = time.time() - ACCOUNTS._cache_time < 20
+        info = (ACCOUNTS._cache or {}).get(sid) if fresh else None
+    if info and info.get("installed") and not info.get("logged_in") and not info.get("error"):
+        return (f"{name} is not signed in. "
+                "Open Accounts (bottom left) to sign in, then try again.")
+    return None
+
+
+def stream_cli(backend, message, session_id, mode, model, workdir, turn):
+    """Yield ('delta'|'replace'|'status', text). Return the result dict."""
+    attempts = ["codex"] if backend == "codex" else ["full", "basic", "off"]
+    emitted = False
+    last_err, last_code = "", 1
+    parser = None
+    for attempt in attempts:
+        if turn.cancel.is_set():
+            raise streaming.Cancelled()
+        parser = streaming.PARSERS[backend]()
+        cmd = build_command(backend, message, session_id, mode, model,
+                            stream="off" if attempt == "codex" else attempt)
+        try:
+            for line in streaming.read_stdout(cmd, workdir, turn):
+                for kind, text in parser.feed_line(line):
+                    emitted = True
+                    yield (kind, text)
+        except streaming.Cancelled:
+            raise
+        except streaming.TurnTimeout:
+            raise
+        if turn.cancel.is_set():
+            raise streaming.Cancelled()
+        result = parser.finish()
+        err = (turn.stderr or "").strip()
+        last_err, last_code = err, turn.returncode
+        # A crash (or a kill) after some text is not a finished answer. A clean
+        # exit with no terminal event still counts: the text we saw is the reply.
+        if turn.returncode not in (0, None) and not getattr(parser, "saw_terminal", False):
+            result = {"error": err or f"Exited with code {turn.returncode}",
+                      "session_id": getattr(parser, "session_id", None)}
+        if result and result.get("reply") is not None:
+            return result
+        if result and result.get("error") and not streaming.unknown_flag(err):
+            result["error"] = login_hint(backend, result["error"])
+            return result
+        if emitted:
+            if result and result.get("error"):
+                result["error"] = login_hint(backend, result["error"])
+                return result
+            return {"error": login_hint(backend, err or "The assistant stopped before it finished."),
+                    "session_id": getattr(parser, "session_id", None)}
+        if streaming.unknown_flag(err) and attempt != attempts[-1]:
+            continue
+        break
+    detail = (last_err or f"Exited with code {last_code}")[-2000:]
+    return {"error": login_hint(backend, detail),
+            "session_id": getattr(parser, "session_id", None) if parser else None}
+
+
 def run_turn(backend, message, session_id, mode, model, workdir):
-    if backend == "ollama":  # an HTTP server, not a command-line tool
-        return ollama.run_turn(ollama_url(), OLLAMA, message, session_id, model, TIMEOUT)
-    cmd = build_command(backend, message, session_id, mode, model)
+    """One turn, collected. Streaming callers use chat_stream; this waits for the final result."""
+    turn = streaming.Turn(uuid.uuid4().hex)
+    gen = iter_backend(backend, message, session_id, mode, model, workdir, turn)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value or {"error": "No reply."}
+    except streaming.Cancelled:
+        return {"error": "Stopped."}
+    except streaming.TurnTimeout as e:
+        return {"error": _timeout_message(e, backend)}
+    except ollama.Stopped:
+        return {"error": "Stopped."}
+    except TimeoutError:
+        return {"error": f"No reply after {streaming.TOTAL_TIMEOUT} seconds."}
+    except (ConnectionError, RuntimeError, OSError) as e:
+        return {"error": str(e) or "No reply."}
+
+
+def _attach(backend, message, files, workdir, model):
+    """Return (message, chatgpt_parts, ollama_images). Raises ValueError when refused."""
+    if not files:
+        return message, None, None
+    if backend in ("claude", "cursor", "codex"):
+        return message + "\n\n" + attachments.stage_for_cli(workdir, files), None, None
+    if backend == "chatgpt":
+        return message, attachments.for_chatgpt(files), None
+    if backend == "ollama":
+        if any(item["kind"] == "image" for item in files) and not model:
+            models = ollama.list_models(ollama_url())
+            model = models[0][0] if models else ""
+        vision = ollama.supports_vision(ollama_url(), model) if any(item["kind"] == "image" for item in files) else None
+        extra, images = attachments.for_ollama(files, vision)
+        if extra:
+            message += "\n\n" + extra
+        return message, None, images or None
+    return message, None, None
+
+
+def iter_backend(backend, message, session_id, mode, model, workdir, turn, files=None):
+    """Yield stream events and return the result dict (possibly {"error": ...})."""
+    files = files or []
+    if backend == "ollama":
+        try:
+            message, _, images = _attach(backend, message, files, workdir, model)
+        except ValueError as e:
+            return {"error": str(e)}
+        try:
+            result = yield from ollama.stream_turn(ollama_url(), OLLAMA, message, session_id, model,
+                                                   turn, streaming.TOTAL_TIMEOUT, images=images)
+        except TimeoutError as e:
+            return {"error": str(e) or f"No reply after {streaming.TOTAL_TIMEOUT} seconds."}
+        except (ConnectionError, RuntimeError, OSError) as e:
+            return {"error": str(e) or "No reply."}
+        return result or {"error": "No reply."}
+    if backend == "chatgpt":
+        try:
+            message, parts, _ = _attach(backend, message, files, workdir, model)
+        except ValueError as e:
+            return {"error": str(e)}
+        try:
+            result = yield from chatgpt.stream_turn(message, session_id, model, turn,
+                                                   streaming.TOTAL_TIMEOUT, attachments=parts)
+        except TimeoutError as e:
+            return {"error": str(e) or f"No reply after {streaming.TOTAL_TIMEOUT} seconds."}
+        except (ConnectionError, RuntimeError, OSError) as e:
+            return {"error": str(e) or "ChatGPT did not answer."}
+        return result or {"error": "No reply."}
     workdir = os.path.expanduser(workdir or HOME)
-    if backend == "chatgpt":  # plain chat: no project folder
-        os.makedirs(CHATGPT_HOME, exist_ok=True)
-        workdir = CHATGPT_HOME
     if not os.path.isdir(workdir):
         return {"error": f"Folder not found: {workdir}"}
     try:
-        proc = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True,
-                              timeout=TIMEOUT, stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        return {"error": f"No reply after {TIMEOUT} seconds."}
-    out = proc.stdout.strip()
-    if backend in ("codex", "chatgpt"):
-        result = parse_codex(out)
-        if result:
-            if result.get("error"):
-                result["error"] = login_hint(backend, result["error"])
-            return result
-    # The JSON result is the last line that parses.
-    for line in reversed(out.splitlines()):
-        try:
-            data = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(data, dict) and "result" in data:
-            if data.get("is_error"):
-                return {"error": login_hint(backend, data.get("result") or "Error"),
-                        "session_id": data.get("session_id")}
-            return {"reply": data.get("result", ""), "session_id": data.get("session_id"),
-                    "usage": json_usage(data)}
-    err = (proc.stderr.strip() or out or f"Exited with code {proc.returncode}")[-2000:]
-    return {"error": login_hint(backend, err)}
+        message, _, _ = _attach(backend, message, files, workdir, model)
+    except ValueError as e:
+        return {"error": str(e)}
+    try:
+        result = yield from stream_cli(backend, message, session_id, mode, model, workdir, turn)
+    except RuntimeError as e:  # missing executable, unknown backend
+        return {"error": login_hint(backend, str(e))}
+    return result or {"error": "No reply."}
 
 
-def json_usage(data):
-    """Token counts (and Claude's cost) from a claude / cursor-agent JSON result."""
-    u = data.get("usage") or {}
-    pick = lambda *keys: next((u[k] for k in keys if isinstance(u.get(k), (int, float))), 0)
-    out = {"input": pick("input_tokens", "inputTokens"),
-           "output": pick("output_tokens", "outputTokens"),
-           "cache_read": pick("cache_read_input_tokens", "cacheReadTokens"),
-           "cache_write": pick("cache_creation_input_tokens", "cacheWriteTokens")}
-    if isinstance(data.get("total_cost_usd"), (int, float)):
-        out["cost"] = data["total_cost_usd"]
-    models = list((data.get("modelUsage") or {}).keys())
-    if models:
-        out["model"] = models[0]
-    return out
+def _detail_line(err):
+    line = next((ln.strip() for ln in str(err).splitlines() if ln.strip()), str(err))
+    return line[:300]
 
 
 def login_hint(backend, err):
-    low = err.lower()
-    if "login" in low or "logged in" in low or "not installed" in low or "auth" in low:
-        err += "\n\nOpen Accounts (bottom left) to install or sign in, then try again."
+    """Turn a raw CLI failure into a short explanation, keeping one line of detail."""
+    name = BACKEND_NAMES.get(backend, "The assistant")
+    low = str(err).lower()
+    if "open accounts" in low and ("not signed in" in low or "not installed" in low):
+        return err
+    signed_out = any(s in low for s in (
+        "not logged in", "not signed in", "please log in", "please login", "please sign in",
+        "authentication required", "unauthorized", "auth login", "run /login", "claude auth login"))
+    if signed_out:
+        return (f"{name} is not signed in. Open Accounts (bottom left) to sign in, then try again."
+                f"\n\nDetails: {_detail_line(err)}")
+    if "not installed" in low or "no such file" in low or "command not found" in low:
+        return (f"{name} is not installed. Open Accounts (bottom left) to install it, then try again."
+                f"\n\nDetails: {_detail_line(err)}")
+    if "login" in low or "logged in" in low or "auth" in low:
+        return err + "\n\nOpen Accounts (bottom left) to install or sign in, then try again."
     return err
 
 
@@ -239,7 +392,9 @@ def list_models(backend):
     """[[id, label], ...] for the dropdown. 'Auto' (no --model flag) is added by the page."""
     if backend == "claude":
         return CLAUDE_MODELS
-    if backend in ("codex", "chatgpt"):
+    if backend == "chatgpt":
+        return chatgpt.list_models()
+    if backend == "codex":
         return CODEX_MODELS if codex_is_bundled() else codex_cached_models()
     if backend == "ollama":  # asked fresh each time: it's fast, and you may have just pulled one
         return ollama.list_models(ollama_url())
@@ -309,9 +464,8 @@ def save_plan(reply, backend, workdir):
     return path
 
 
-def chat(req):
-    """One chat turn with saved memories: send them when a chat starts (or after they
-    change), and save any REMEMBER: lines the assistant adds."""
+def _prepare_message(req):
+    """Context (memories, notes, plan rules) prepended to the user's message when needed."""
     session_id, message = req.get("session_id"), req.get("message", "")
     version = MEMORY.version()
     context = MEMORY.context() if (not session_id or req.get("context_version") != version) else ""
@@ -329,11 +483,14 @@ def chat(req):
     if context:
         message = context + ("The user's message:\n" if not session_id
                              else "(Context updated.) The user's message:\n") + message
+    return message, notes
+
+
+def _finish_result(req, result, notes, started):
+    """Usage, saved memories and the plan file. Mutates result."""
     backend, model = req.get("backend"), (req.get("model") or "").strip()
-    started = time.time()
-    result = run_turn(backend, message, session_id, req.get("mode", "ask"), model, req.get("workdir"))
     if backend in usagemod.BACKENDS and not str(result.get("error", "")).startswith("Folder not found"):
-        if not model and backend in ("codex", "chatgpt") and codex_is_bundled():
+        if not model and backend == "codex" and codex_is_bundled():
             model = CODEX_DEFAULT_MODEL
         result["usage"] = USAGE.record(backend, req.get("mode", "ask"), model,
                                        "reply" in result, time.time() - started, result.get("usage"))
@@ -351,6 +508,86 @@ def chat(req):
     return result
 
 
+def chat_stream(req):
+    """NDJSON events for one turn: started, delta/replace/status, then done or error."""
+    turn_id = str(req.get("turn_id") or "")
+    if not re.fullmatch(r"[a-f0-9]{8,64}", turn_id):
+        turn_id = uuid.uuid4().hex
+    turn = streaming.Turn(turn_id)
+    streaming.register(turn)
+    try:
+        yield {"type": "started", "turn_id": turn.id}
+        try:
+            if turn.cancel.is_set():
+                yield {"type": "error", "error": "Stopped.", "stopped": True,
+                       "context_version": req.get("context_version")}
+                return
+            try:
+                files = attachments.load_many(DATA_DIR, req.get("attachments") or [])
+            except ValueError as e:
+                yield {"type": "error", "error": str(e), "context_version": req.get("context_version")}
+                return
+            if files and not str(req.get("message") or "").strip():
+                req = dict(req)
+                req["message"] = "Please look at the attached files."
+            message, notes = _prepare_message(req)
+            backend, model = req.get("backend"), (req.get("model") or "").strip()
+            problem = preflight(backend)
+            if problem:
+                yield {"type": "error", "error": problem, "context_version": req.get("context_version")}
+                return
+            started = time.time()
+            gen = iter_backend(backend, message, req.get("session_id"), req.get("mode", "ask"),
+                               model, req.get("workdir"), turn, files)
+            try:
+                while True:
+                    kind, text = next(gen)
+                    yield {"type": kind, "text": text}
+            except StopIteration as stop:
+                result = stop.value or {"error": "No reply."}
+            result = _finish_result(req, result, notes, started)
+        except streaming.Cancelled:
+            yield {"type": "error", "error": "Stopped.", "stopped": True,
+                   "context_version": req.get("context_version")}
+            return
+        except streaming.TurnTimeout as e:
+            yield {"type": "error", "error": _timeout_message(e, req.get("backend")),
+                   "context_version": req.get("context_version")}
+            return
+        except ollama.Stopped:
+            yield {"type": "error", "error": "Stopped.", "stopped": True,
+                   "context_version": req.get("context_version")}
+            return
+        except Exception as e:
+            yield {"type": "error", "error": str(e), "context_version": req.get("context_version")}
+            return
+        if result.get("reply") is not None:
+            yield {"type": "done", **{k: v for k, v in result.items()}}
+        else:
+            yield {"type": "error", "error": result.get("error") or "No reply.",
+                   "session_id": result.get("session_id"),
+                   "context_version": result.get("context_version")}
+    except GeneratorExit:
+        turn.kill()
+        raise
+    finally:
+        if (turn.proc and turn.proc.poll() is None) or turn.cancel.is_set():
+            turn.kill()
+        streaming.finish(turn)
+
+
+def chat(req):
+    """One chat turn, waiting for the final reply. The page uses chat_stream instead."""
+    final = {"error": "No reply."}
+    for ev in chat_stream(req):
+        if ev.get("type") == "done":
+            final = {k: v for k, v in ev.items() if k != "type"}
+        elif ev.get("type") == "error":
+            final = {"error": ev.get("error") or "No reply.", "session_id": ev.get("session_id"),
+                     "context_version": ev.get("context_version")}
+    return final
+
+
 # ---- chat history: one JSON file per chat in <data>/chats ----
 CHATS_DIR = os.path.join(DATA_DIR, "chats")
 CHAT_ID = re.compile(r"^[a-f0-9]{12}$")
@@ -362,7 +599,14 @@ def _chat_path(cid):
     return os.path.join(CHATS_DIR, cid + ".json")
 
 
+def _sync_root():
+    return syncmod.root_for(MEMORY)
+
+
 def list_chats():
+    root = _sync_root()
+    if root:
+        return syncmod.list_chats(root)
     out = []
     try:
         names = os.listdir(CHATS_DIR)
@@ -382,6 +626,9 @@ def list_chats():
 
 
 def load_chat(cid):
+    root = _sync_root()
+    if root:
+        return syncmod.load_chat(root, cid)
     try:
         with open(_chat_path(cid), encoding="utf-8") as f:
             return json.load(f)
@@ -390,15 +637,25 @@ def load_chat(cid):
 
 
 def save_chat(chat):
+    if not CHAT_ID.match(chat.get("id") or ""):
+        raise ValueError("Bad chat id")
+    chat["updated"] = time.time()
+    root = _sync_root()
+    if root:
+        syncmod.save_chat(root, chat)
+        return
     path = _chat_path(chat.get("id"))
     os.makedirs(CHATS_DIR, exist_ok=True)
-    chat["updated"] = time.time()
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(chat, f, ensure_ascii=False)
     os.replace(path + ".tmp", path)
 
 
 def delete_chat(cid):
+    root = _sync_root()
+    if root:
+        syncmod.delete_chat(root, cid)
+        return
     try:
         os.remove(_chat_path(cid))
     except FileNotFoundError:
@@ -410,7 +667,8 @@ def settings_payload():
     where = (os.path.join(v.path, vaultmod.MEMORY_NOTE) if v and MEMORY.settings()["memory_in_vault"]
              else MEMORY.memories_path)
     return {"settings": MEMORY.settings(), "memories": MEMORY.memories(), "path": where,
-            "vault": v.info() if v else None, "detected": vaultmod.detect_vaults()}
+            "vault": v.info() if v else None, "detected": vaultmod.detect_vaults(),
+            "sync": syncmod.describe(MEMORY)}
 
 
 def status():
@@ -418,17 +676,74 @@ def status():
             "codex": bool(find("codex")), "chatgpt": bool(find("codex")), "home": HOME}
 
 
+def _updates_busy():
+    if streaming.any_active():
+        return True
+    service = chatgpt.SERVICE
+    job = getattr(service, "job", None) if service else None
+    if job is not None and job.state == "running":
+        return True
+    return any(item.state == "running" for item in ACCOUNTS.jobs.values())
+
+
+def start_updates():
+    """Check for a newer Chatbox in the background. Off unless Settings says so."""
+    def settings():
+        try:
+            return MEMORY.settings()
+        except Exception:
+            return {"auto_update": True, "auto_install_updates": False}
+
+    def port():
+        return CURRENT_PORT
+
+    updatemod.start(DATA_DIR, HERE, settings, _updates_busy, port)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def _send(self, code, body, ctype="application/json"):
+    def _send(self, code, body, ctype="application/json", headers=None):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _stream_ndjson(self, events):
+        """Write a stream of JSON lines. HTTP/1.0 so the browser reads until we close."""
+        iterator = iter(events)
+        try:
+            first = next(iterator)
+        except StopIteration:
+            return self._send(200, "", "application/x-ndjson; charset=utf-8")
+        except Exception as e:
+            return self._send(200, json.dumps({"type": "error", "error": str(e)}) + "\n",
+                              "application/x-ndjson; charset=utf-8")
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+
+        def write(ev):
+            self.wfile.write((json.dumps(ev, ensure_ascii=False) + "\n").encode())
+            self.wfile.flush()
+
+        try:
+            write(first)
+            for ev in iterator:
+                write(ev)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            iterator.close()
 
     def _local_only(self):
         # Block requests from other websites (DNS rebinding / cross-site posts).
@@ -443,8 +758,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._local_only():
             return self._send(403, '{"error":"forbidden"}')
-        if self.path in ("/", "/index.html"):
-            return self._send(200, page(), "text/html; charset=utf-8")
+        ui = ui_file(self.path)
+        if ui:
+            body, ctype = ui
+            return self._send(200, body, ctype, {"Cache-Control": "no-cache"})
         if self.path == "/api/status":
             return self._send(200, json.dumps(status()))
         if self.path.startswith("/api/models?backend="):
@@ -462,7 +779,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200 if chat else 404, json.dumps(chat or {"error": "not found"}))
         if self.path.startswith("/api/accounts"):
             return self._send(200, json.dumps(ACCOUNTS.status(fresh="fresh=1" in self.path)
-                                              + [ollama.status(ollama_url())]))
+                                              + [chatgpt.status(), ollama.status(ollama_url())]))
+        if self.path == "/api/update":
+            return self._send(200, json.dumps(updatemod.snapshot()))
         self._send(404, '{"error":"not found"}')
 
     def do_POST(self):
@@ -475,7 +794,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, '{"error":"bad request"}')
         if self.path == "/api/account":
             try:
-                ACCOUNTS.action(req.get("service"), req.get("action"), req.get("text", ""))
+                if req.get("service") == "chatgpt":
+                    chatgpt.action(req.get("action"))
+                else:
+                    ACCOUNTS.action(req.get("service"), req.get("action"), req.get("text", ""))
                 if req.get("action") in ("dismiss", "cancel"):
                     _model_cache.clear()  # a new install/login may change the lists
                 return self._send(200, json.dumps({"ok": True}))
@@ -516,6 +838,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(settings_payload()))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+        if self.path == "/api/sync" and req.get("action") == "move":
+            root = syncmod.root_for(MEMORY)
+            if not root:
+                if not MEMORY.vault():
+                    return self._send(200, json.dumps({"error": "Connect an Obsidian vault first (Accounts).",
+                                                       **settings_payload()}))
+                return self._send(200, json.dumps({"error": "Turn on Sync in Settings first.",
+                                                   **settings_payload()}))
+            try:
+                moved = syncmod.move_existing(DATA_DIR, root)
+            except Exception as e:
+                return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+            return self._send(200, json.dumps({**moved, **settings_payload()}))
         if self.path == "/api/usage" and req.get("action") == "clear":
             USAGE.clear()
             return self._send(200, json.dumps(USAGE.summary(30)))
@@ -536,6 +871,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, '{"error":"Only plan files saved by Chatbox can be opened."}')
             accounts.open_path(path)
             return self._send(200, '{"ok":true}')
+        if self.path == "/api/attach":
+            try:
+                meta = attachments.save(DATA_DIR, req.get("name"), req.get("type"), req.get("data"))
+                return self._send(200, json.dumps(meta))
+            except ValueError as e:
+                return self._send(200, json.dumps({"error": str(e)}))
+        if self.path == "/api/cancel":
+            return self._send(200, json.dumps({"ok": streaming.cancel(str(req.get("turn_id") or ""))}))
+        if self.path == "/api/update":
+            action = req.get("action") or "check"
+            if action == "apply":
+                return self._send(200, json.dumps(updatemod.request_apply()))
+            if action == "check":
+                return self._send(200, json.dumps(updatemod.consider(auto=False)))
+            return self._send(200, json.dumps({"error": "Unknown action"}))
         if self.path == "/api/open":
             try:
                 accounts.open_url(req.get("url", ""))
@@ -544,19 +894,34 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"error": str(e)}))
         if self.path != "/api/chat":
             return self._send(404, '{"error":"not found"}')
-        try:
-            result = chat(req)
-        except Exception as e:  # report any failure to the page
-            result = {"error": str(e)}
-        self._send(200, json.dumps(result))
+        self._stream_ndjson(chat_stream(req))
 
 
-UI_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html")
+UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+_UI_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+             ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
 
 
-def page():
-    with open(UI_FILE, encoding="utf-8") as f:
-        return f.read()
+def ui_file(url_path):
+    """Return (text, content-type) for a ui/ file, or None. Rejects paths outside ui/."""
+    if url_path in ("/", "/index.html"):
+        rel = "index.html"
+    elif url_path.startswith("/ui/"):
+        rel = url_path[len("/ui/"):]
+    else:
+        return None
+    rel = os.path.normpath(rel)
+    if rel.startswith("..") or os.path.isabs(rel):
+        return None
+    root = os.path.abspath(UI_DIR)
+    full = os.path.abspath(os.path.join(root, rel))
+    if full != root and not full.startswith(root + os.sep):
+        return None
+    if not os.path.isfile(full):
+        return None
+    ctype = _UI_TYPES.get(os.path.splitext(full)[1], "application/octet-stream")
+    with open(full, encoding="utf-8") as f:
+        return f.read(), ctype
 
 
 def main():
@@ -564,8 +929,11 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
+    global CURRENT_PORT
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    url = f"http://127.0.0.1:{args.port}/"
+    CURRENT_PORT = srv.server_address[1]
+    start_updates()
+    url = f"http://127.0.0.1:{CURRENT_PORT}/"
     print(f"Chatbox running at {url}  (Ctrl+C to stop)")
     if not args.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()

@@ -34,7 +34,9 @@ if [ -n "$BOX" ] && [ "$OS" = Darwin ]; then echo "--distrobox is for Linux only
 
 echo "Installing Chatbox to $D"
 mkdir -p "$D"
-cp "$SRC"/chatbox.py "$SRC"/accounts.py "$SRC"/memory.py "$SRC"/vault.py "$SRC"/usage.py "$SRC"/ollama.py "$SRC"/ui.html "$SRC"/app.py "$SRC"/chatbox.svg "$D"/
+cp "$SRC"/*.py "$SRC"/chatbox.svg "$D"/
+rm -rf "$D/ui"
+cp -R "$SRC/ui" "$D/ui"
 
 has_qt() { "$D/venv/bin/python" -c "import PyQt6.QtWebEngineWidgets" 2>/dev/null; }
 
@@ -81,6 +83,15 @@ $RUN >>"\$D/chatbox.log" 2>&1
 EOF
 chmod +x "$D/run.sh"
 
+# Remember this clone, the mode, and a distrobox name so a later update can
+# fast-forward the same folder and run install.sh the same way. No tokens.
+python3 - "$D" "$SRC" "$MODE" "$BOX" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import update
+update.write_install(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "")
+PY
+
 if [ "$OS" = Darwin ]; then
   # macOS: a small Chatbox.app that starts run.sh. /Applications is what Finder and
   # Launchpad show; admin users can write there without sudo.
@@ -102,12 +113,23 @@ if [ "$OS" = Darwin ]; then
   <key>CFBundleIconFile</key><string>chatbox</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
   # Icon: render the SVG with Quick Look, then build an .icns (skipped if that fails).
+  # qlmanage can hang; cap it so install still finishes without an icon.
   T="$(mktemp -d)"
-  if qlmanage -t -s 1024 -o "$T" "$SRC/chatbox.svg" >/dev/null 2>&1 && [ -f "$T/chatbox.svg.png" ]; then
+  python3 - "$T" "$SRC/chatbox.svg" <<'PY' || true
+import subprocess, sys
+folder, svg = sys.argv[1], sys.argv[2]
+try:
+    subprocess.run(["qlmanage", "-t", "-s", "1024", "-o", folder, svg],
+                   timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+except (OSError, subprocess.TimeoutExpired):
+    sys.exit(1)
+PY
+  if [ -f "$T/chatbox.svg.png" ]; then
     mkdir -p "$T/chatbox.iconset"
     for s in 16 32 128 256 512; do
       sips -z $s $s "$T/chatbox.svg.png" --out "$T/chatbox.iconset/icon_${s}x${s}.png" >/dev/null 2>&1 || true

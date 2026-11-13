@@ -1,0 +1,66 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: bash -n install.sh && bash -n uninstall.sh
+
+      # The Mac app bundle has not been exercised on a physical Mac in this repo.
+      # This installs browser mode on the GitHub macOS runner and checks the bundle starts.
+      - name: macOS install smoke
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          ./install.sh --browser
+          D="$HOME/.local/share/chatbox"
+          test -x "$D/run.sh"
+          test -f "$D/chatbox.py"
+          test -f "$D/ui/index.html"
+          test -f "$D/ui/js/app.js"
+          test -f "$D/chatgpt.py"
+          test -f "$D/attachments.py"
+          test -f "$D/update.py"
+          test -f "$D/install.json"
+          python3 -c 'import json,os,sys; d=json.load(open(os.path.join(sys.argv[1],"install.json"))); assert d["mode"]=="browser" and d["source"]' "$D"
+          APP=""
+          if [ -d /Applications/Chatbox.app ]; then APP=/Applications/Chatbox.app; fi
+          if [ -d "$HOME/Applications/Chatbox.app" ]; then APP="$HOME/Applications/Chatbox.app"; fi
+          test -n "$APP"
+          test -x "$APP/Contents/MacOS/Chatbox"
+          test -f "$APP/Contents/Info.plist"
+          # chatbox.py reads CHATBOX_DATA at import. Keep this smoke server's data out of the install dir.
+          DATA="$(mktemp -d)"
+          CHATBOX_DATA="$DATA" python3 "$D/chatbox.py" --no-browser --port 8765 >"$DATA/server.log" 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          ok=0
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            if curl -fsS "http://127.0.0.1:8765/" | grep -q "ui/js/app.js"; then
+              ok=1
+              break
+            fi
+            sleep 0.4
+          done
+          if [ "$ok" != 1 ]; then
+            echo "server did not answer" >&2
+            cat "$DATA/server.log" >&2 || true
+            exit 1
+          fi
+          curl -fsS "http://127.0.0.1:8765/ui/style.css" | grep -q -- "--bg"
+          curl -fsS "http://127.0.0.1:8765/api/status" | grep -q "home"

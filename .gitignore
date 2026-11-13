@@ -7,6 +7,8 @@ venv/
 # Local app data (if run from the repo folder)
 profile/
 chatgpt-home/
+uploads/
+.chatbox-attach/
 bin/
 *.log
 
@@ -22,6 +24,9 @@ id_ed25519*
 auth.json
 .credentials.json
 credentials*
+
+# Written by install.sh so the installed copy knows its clone. Not part of the source.
+install.json
 
 # Personal memories and settings (if CHATBOX_DATA points here)
 memories.json
