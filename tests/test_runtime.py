@@ -201,10 +201,16 @@ class ReleaseAssetTests(unittest.TestCase):
 
     def test_packaged_version_follows_the_tag_or_version_file(self):
         import importlib.util
+        from pathlib import Path
         path = os.path.join(os.path.dirname(__file__), "..", "packaging", "build.py")
         spec = importlib.util.spec_from_file_location("pack_build_version", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        root = Path(tmp)
+        (root / "VERSION").write_text("9.8.7\n", encoding="utf-8")
+        mod.ROOT = root
         old = os.environ.pop("CHATBOX_VERSION", None)
 
         def restore_env():
@@ -214,13 +220,12 @@ class ReleaseAssetTests(unittest.TestCase):
                 os.environ["CHATBOX_VERSION"] = old
 
         self.addCleanup(restore_env)
-        self.assertEqual(mod.version(), "1.0.0")
+        expected = (root / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertEqual(mod.version(), expected)
         os.environ["CHATBOX_VERSION"] = "v1.0.10"
         self.assertEqual(mod.version(), "1.0.10")
-        version_file = mod.ROOT / "version.txt"
-        self.addCleanup(lambda: version_file.is_file() and version_file.unlink())
         mod.write_version()
-        self.assertEqual(version_file.read_text(encoding="utf-8"), "1.0.10\n")
+        self.assertEqual((root / "version.txt").read_text(encoding="utf-8"), "1.0.10\n")
 
     def test_pyinstaller_data_paths_are_absolute(self):
         import importlib.util
