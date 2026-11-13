@@ -41,12 +41,56 @@ DEFAULTS = {
     "memory_in_vault": True,  # keep memories in the vault's Chatbox/Memories.md
     "vault_search": True,   # give the assistant notes related to each message
     "ollama_url": "http://localhost:11434",  # where the Ollama server runs
-    "sync_chats": False,    # keep chats and memories in the Obsidian vault
+    "sync_chats": False,    # keep chats and memories in the notes folder
     "sync_folder": "Chatbox",  # folder inside the vault, shared by Obsidian Sync
+    "notes_storage": "",    # obsidian | chatbox | off; "" until the first choice
     "auto_update": True,    # look for a new version on startup and every few hours
     "auto_install_updates": False,  # fast-forward and reinstall without asking
 }
 REMEMBER = re.compile(r"^[ \t>*_-]*REMEMBER:\s*(.+?)\s*$", re.MULTILINE)
+NOTES_MODES = ("obsidian", "chatbox", "off")
+
+
+def copy_notes(src, dest):
+    """Copy Markdown from the Chatbox folder into a vault. Skip ids and paths already there."""
+    import sync as syncmod
+    src = os.path.abspath(src)
+    dest = os.path.abspath(dest)
+    if not os.path.isdir(src) or not vaultmod.is_vault(dest):
+        return 0
+    if os.path.realpath(src) == os.path.realpath(dest):
+        return 0
+    try:
+        have = set(syncmod.find_chat_notes(dest))
+    except Exception:
+        have = set()
+    copied = 0
+    for dirpath, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d not in vaultmod.SKIP_DIRS and not d.startswith(".")]
+        for name in files:
+            if not name.endswith(".md") or name.startswith("."):
+                continue
+            source = os.path.join(dirpath, name)
+            rel = os.path.relpath(source, src)
+            target = os.path.join(dest, rel)
+            try:
+                cid = syncmod._note_id(source)
+            except Exception:
+                cid = ""
+            if cid and cid in have:
+                continue
+            if os.path.exists(target):
+                continue
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(source, "rb") as incoming, open(target, "wb") as outgoing:
+                    outgoing.write(incoming.read())
+            except OSError:
+                continue
+            copied += 1
+            if cid:
+                have.add(cid)
+    return copied
 _TOKEN = re.compile(r"\w+", re.UNICODE)
 
 
@@ -77,16 +121,87 @@ class Store:
         s.update({k: v for k, v in self._load(self.settings_path, {}).items() if k in DEFAULTS})
         return s
 
+    def local_vault_dir(self):
+        """Plain Markdown notes kept by Chatbox. Open this folder in Obsidian later."""
+        return os.path.join(self.dir, "vault")
+
+    def notes_mode(self):
+        """obsidian, chatbox, off, or '' when this install has not chosen yet."""
+        try:
+            settings = self.settings()
+        except Exception:
+            return ""
+        mode = settings.get("notes_storage") or ""
+        if mode in ("obsidian", "chatbox", "off"):
+            return mode
+        if settings.get("vault_path"):
+            return "obsidian"
+        return ""
+
+    def ensure_notes_choice(self):
+        """First launch with no Obsidian app uses the Chatbox folder. A connected vault stays put."""
+        try:
+            saved = self._load(self.settings_path, {})
+        except Exception:
+            saved = {}
+        if not isinstance(saved, dict):
+            saved = {}
+        if saved.get("notes_storage") in ("obsidian", "chatbox", "off"):
+            return saved["notes_storage"]
+        if saved.get("vault_path"):
+            self.update_settings({"notes_storage": "obsidian", "sync_chats": True})
+            return "obsidian"
+        try:
+            installed = vaultmod.obsidian_installed()
+        except Exception:
+            installed = False
+        if not installed:
+            os.makedirs(self.local_vault_dir(), exist_ok=True)
+            self.update_settings({"notes_storage": "chatbox", "sync_chats": True})
+            return "chatbox"
+        self.update_settings({"notes_storage": "off"}, _prepare=False)
+        return "off"
+
     def vault(self):
-        """The connected vault, or None. A missing folder counts as not connected."""
+        """The notes folder, or None. Off means no notes. Chatbox mode uses its own folder."""
         try:
             settings = self.settings()
         except Exception:
             return None
+        mode = self.notes_mode()
+        folder = settings.get("sync_folder") or "Chatbox"
+        if mode == "off":
+            return None
+        if mode == "chatbox":
+            path = self.local_vault_dir()
+            try:
+                os.makedirs(path, exist_ok=True)
+            except OSError:
+                return None
+            return vaultmod.Vault(path, sync_folder=folder)
         p = settings.get("vault_path") or ""
         if not vaultmod.is_vault(p):
             return None
-        return vaultmod.Vault(p, sync_folder=settings.get("sync_folder") or "Chatbox")
+        return vaultmod.Vault(p, sync_folder=folder)
+
+    def set_notes_storage(self, mode, path="", copy=False):
+        """Switch notes storage. Copying from Chatbox into a vault skips notes already there."""
+        mode = mode if mode in ("obsidian", "chatbox", "off") else "off"
+        previous = self.notes_mode()
+        copied = 0
+        if mode == "obsidian":
+            path = os.path.abspath(os.path.expanduser(path or self.settings().get("vault_path") or ""))
+            if not vaultmod.is_vault(path):
+                raise ValueError("Choose a vault folder that already exists.")
+            if copy and previous == "chatbox":
+                copied = copy_notes(self.local_vault_dir(), path)
+            self.update_settings({"notes_storage": "obsidian", "vault_path": path, "sync_chats": True})
+        elif mode == "chatbox":
+            os.makedirs(self.local_vault_dir(), exist_ok=True)
+            self.update_settings({"notes_storage": "chatbox", "sync_chats": True})
+        else:
+            self.update_settings({"notes_storage": "off", "sync_chats": False})
+        return {"copied": copied, "mode": self.notes_mode()}
 
     def _vault_memory(self):
         v = self.vault()
@@ -172,6 +287,9 @@ class Store:
                     requested_folder = s[k]
                 elif k == "ollama_url":
                     s[k] = str(v).strip()[:500]
+                elif k == "notes_storage":
+                    if v in ("obsidian", "chatbox", "off"):
+                        s[k] = v
                 elif k == "instructions":
                     s[k] = str(v)[:4000]
             self._save(self.settings_path, s)

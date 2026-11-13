@@ -21,6 +21,10 @@
   </aside>
 
   <main id="main" class="is-empty">
+    <div id="notebanner" class="updatebar" hidden>
+      <span>Notes are saved in Chatbox for now. Obsidian is recommended — it can open this folder later and keep it in sync.</span>
+      <a data-href="https://obsidian.md/download">Download Obsidian</a>
+    </div>
     <div id="updatebar" class="updatebar" hidden>
       <span id="updatetext">Update available</span>
       <button type="button" class="pillbtn" id="updatebtn">Update now</button>
@@ -110,25 +114,27 @@
       <div id="memlist"></div>
       <div class="row" style="justify-content:space-between"><code class="path" id="mempath"></code><button class="ghost" id="memclear">Delete all</button></div>
     </section>
-    <section class="sec" id="syncsec">
-      <div class="sec-h"><b>Sync</b></div>
-      <div class="muted">Keep chats and memories in a folder of your Obsidian vault, so they follow the vault to your other computers. Sign-ins stay on this computer. Off until you turn it on.</div>
-      <div id="syncneed" class="muted">Connect an Obsidian vault in Accounts first.</div>
-      <div id="syncopts">
-        <label class="chk"><input type="checkbox" id="sync_chats"> Sync chats and memory through the vault</label>
+    <section class="sec" id="notesec">
+      <div class="sec-h"><b>Notes storage</b></div>
+      <div class="muted">Chats and memories are plain Markdown. Sign-ins stay on this computer.</div>
+      <label class="chk"><input type="radio" name="notes" value="obsidian"> Use my Obsidian vault <span class="pill ok">Recommended</span></label>
+      <div id="obsidianopts">
         <div id="syncnotice" class="notice" hidden>
           <span id="syncnoticetext">Obsidian not found.</span>
           <a id="obsdownload" data-href="https://obsidian.md/download">Download Obsidian</a>
-          <button type="button" class="ghost" id="choosevault">Choose vault folder</button>
         </div>
-        <form id="vaultpick" class="row" hidden>
+        <form id="vaultpick" class="row">
           <input class="field" id="vaultpickpath" placeholder="Vault folder, e.g. ~/Documents/MyVault" style="flex:1;min-width:160px">
-          <button class="ghost">Connect</button>
+          <button class="ghost" type="submit">Choose vault folder</button>
         </form>
         <form class="row" id="syncform"><span class="muted">Sync folder</span><input class="field" id="sync_folder" placeholder="Chatbox" style="flex:1;min-width:160px"><button class="ghost">Save</button></form>
         <div class="muted" id="syncstatus"></div>
         <button class="ghost" id="syncmove" type="button">Move existing chats to sync folder</button>
       </div>
+      <label class="chk"><input type="radio" name="notes" value="chatbox"> Keep notes inside Chatbox (no Obsidian)</label>
+      <div class="muted" id="noteslocalhint">Open in Obsidian later. The folder is plain Markdown.</div>
+      <code class="path" id="noteslocalpath"></code>
+      <label class="chk"><input type="radio" name="notes" value="off"> Off</label>
     </section>
     <section class="sec">
       <div class="sec-h"><b>Custom instructions</b></div>

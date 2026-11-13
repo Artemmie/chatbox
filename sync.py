@@ -93,7 +93,10 @@ def root_for(store):
         settings = store.settings()
     except Exception:
         return None
-    if not settings.get("sync_chats"):
+    mode = store.notes_mode() if hasattr(store, "notes_mode") else ""
+    if mode == "off":
+        return None
+    if mode != "chatbox" and not settings.get("sync_chats"):
         return None
     vault = store.vault()
     if not vault:

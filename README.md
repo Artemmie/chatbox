@@ -145,6 +145,7 @@ Chatbox treats any vault the same way. It does not assume a particular person's 
 - `Bots/Bots.md` links `Back to [[Home]]`. `Bots/Claude.md` (and Cursor, Codex, ChatGPT, Ollama) appear only after a chat used that editor, and their `%% chatbox:chats %%` section lists recent chats. Ollama model names are grouped on `Ollama.md`.
 - The Chatbox hub lists `[[Memories]]` only after `Memories.md` exists. Changing the sync folder exports local chats from `~/.local/share/chatbox/chats/` into the current project folders, and does not copy an id that is already in the vault.
 - If Obsidian or the vault folder is missing, Settings says so and offers [Download Obsidian](https://obsidian.md/download) plus **Choose vault folder**. Sync stays off instead of raising.
+- Settings → Notes storage has three choices. **Use my Obsidian vault** is recommended. **Keep notes inside Chatbox** uses the same layout in `~/.local/share/chatbox/vault` (plain Markdown, so Obsidian can open it later). **Off** leaves notes out of both. The first launch with no Obsidian app uses the Chatbox folder and shows a short recommendation. Switching to a vault can copy those notes without duplicating ones already there.
 
 ## Files
 

@@ -723,6 +723,10 @@ def delete_chat(cid):
 
 def settings_payload():
     try:
+        MEMORY.ensure_notes_choice()
+    except Exception:
+        pass
+    try:
         v = MEMORY.vault()
     except Exception:
         v = None
@@ -740,10 +744,15 @@ def settings_payload():
         installed = vaultmod.obsidian_installed()
     except Exception:
         installed = False
-    notice = vaultmod.connection_notice(settings.get("vault_path") or "", bool(v), installed)
+    notice = vaultmod.connection_notice(settings.get("vault_path") or "", bool(v) and settings.get("notes_storage") != "chatbox", installed)
+    mode = MEMORY.notes_mode()
+    notes = {"mode": mode, "local_path": MEMORY.local_vault_dir(),
+             "installed": installed, "download": vaultmod.OBSIDIAN_DOWNLOAD,
+             "banner": mode == "chatbox" and not installed}
     return {"settings": settings, "memories": MEMORY.memories(), "path": where,
             "vault": v.info() if v else None, "detected": vaultmod.detect_vaults(),
-            "sync": syncmod.describe(MEMORY), "projects": projects, "obsidian_app": notice}
+            "sync": syncmod.describe(MEMORY), "projects": projects, "obsidian_app": notice,
+            "notes": notes}
 
 
 def status():
@@ -920,6 +929,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(settings_payload()))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+        if self.path == "/api/notes":
+            try:
+                result = MEMORY.set_notes_storage(req.get("mode") or "off", req.get("path") or "",
+                                                  copy=bool(req.get("copy")))
+                return self._send(200, json.dumps({**result, **settings_payload()}))
+            except Exception as e:
+                return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
         if self.path == "/api/sync" and req.get("action") == "move":
             root = syncmod.root_for(MEMORY)
             if not root:
@@ -1017,6 +1033,7 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     CURRENT_PORT = srv.server_address[1]
     try:
+        MEMORY.ensure_notes_choice()
         syncmod.prepare_vault(MEMORY)
     except Exception:
         pass
