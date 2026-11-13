@@ -26,26 +26,38 @@ def write_version():
     (ROOT / "version.txt").write_text(text, encoding="utf-8")
 
 
-def pyinstaller():
-    write_version()
-    os.chdir(ROOT)
+def _add_data(src, dest):
+    """Absolute source path. PyInstaller resolves a relative one against --specpath (dist/)."""
+    src = Path(src).resolve()
+    if not src.exists():
+        raise SystemExit(f"Missing {src}")
     sep = ";" if os.name == "nt" else ":"
+    return f"{src}{sep}{dest}"
+
+
+def pyinstaller_command():
+    write_version()
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean", "--windowed", "--name", "Chatbox",
-        "--add-data", f"ui{sep}ui",
-        "--add-data", f"chatbox.svg{sep}.",
-        "--add-data", f"version.txt{sep}.",
+        "--add-data", _add_data(ROOT / "ui", "ui"),
+        "--add-data", _add_data(ROOT / "chatbox.svg", "."),
+        "--add-data", _add_data(ROOT / "version.txt", "."),
         "--collect-all", "PyQt6",
         "--specpath", str(DIST),
         "--distpath", str(DIST),
         "--workpath", str(ROOT / "build"),
-        "--osx-bundle-identifier", "local.chatbox",
-        str(ROOT / "launcher.py"),
+        str((ROOT / "launcher.py").resolve()),
     ]
-    if sys.platform != "darwin":
-        cmd = [part for part in cmd if part != "--osx-bundle-identifier" and part != "local.chatbox"]
-    subprocess.check_call(cmd)
+    if sys.platform == "darwin":
+        cmd.insert(-1, "--osx-bundle-identifier")
+        cmd.insert(-1, "local.chatbox")
+    return cmd
+
+
+def pyinstaller():
+    os.chdir(ROOT)
+    subprocess.check_call(pyinstaller_command())
 
 
 def _zip_dir(folder, dest):
@@ -79,6 +91,19 @@ def package_windows():
     subprocess.check_call([iscc, f"/DAppVersion={version().lstrip('v')}", str(ROOT / "packaging" / "Chatbox.iss")])
 
 
+def _write_png(path, size=64):
+    """A small PNG so appimagetool can make .DirIcon from Icon=chatbox."""
+    import struct
+    import zlib
+    row = b"\x00" + bytes((201, 100, 66, 255)) * size
+    raw = row * size
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    Path(path).write_bytes(png)
+
+
 def package_linux():
     OUT.mkdir(parents=True, exist_ok=True)
     app = DIST / "Chatbox"
@@ -109,10 +134,12 @@ def package_linux():
     desktop = (ROOT / "packaging" / "chatbox.desktop").read_text(encoding="utf-8")
     (appdir / "chatbox.desktop").write_text(desktop, encoding="utf-8")
     shutil.copy(ROOT / "chatbox.svg", appdir / "chatbox.svg")
+    _write_png(appdir / "chatbox.png")
     tool = os.environ.get("APPIMAGETOOL", "appimagetool")
     dest = OUT / "Chatbox-Linux-x86_64.AppImage"
     env = os.environ.copy()
     env["ARCH"] = "x86_64"
+    env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")
     subprocess.check_call([tool, str(appdir), str(dest)], env=env)
     os.chmod(dest, 0o755)
 

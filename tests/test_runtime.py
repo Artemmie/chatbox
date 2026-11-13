@@ -135,10 +135,28 @@ class ReleaseAssetTests(unittest.TestCase):
                                      system="Windows")
         self.assertFalse(found["available"])
 
+    def test_pyinstaller_data_paths_are_absolute(self):
+        import importlib.util
+        path = os.path.join(os.path.dirname(__file__), "..", "packaging", "build.py")
+        spec = importlib.util.spec_from_file_location("pack_build", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cmd = mod.pyinstaller_command()
+        sep = ";" if os.name == "nt" else ":"
+        datas = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--add-data"]
+        self.assertEqual(len(datas), 3)
+        root = str(mod.ROOT.resolve())
+        for item in datas:
+            src = item.split(sep, 1)[0]
+            self.assertTrue(os.path.isabs(src), src)
+            self.assertTrue(src.startswith(root), src)
+            self.assertFalse(src.startswith(str(mod.DIST.resolve()) + os.sep), src)
+
     def test_release_workflow_signs_only_when_secrets_exist(self):
         text = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "release.yml"),
                     encoding="utf-8").read()
         self.assertIn("workflow_dispatch", text)
+        self.assertIn("pull_request", text)
         self.assertIn("refs/tags/v", text)
         for name in ("MACOS_CERT_P12_BASE64", "MACOS_CERT_PASSWORD", "MACOS_SIGN_IDENTITY",
                      "APPLE_ID", "APPLE_TEAM_ID", "APPLE_APP_PASSWORD",
