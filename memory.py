@@ -10,11 +10,29 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import uuid
 
 import vault as vaultmod
 
 MAX_MEMORY = 500  # characters per memory
+# How much of a REMEMBER line has to be old news before it is thrown away.
+# Vault notes and custom instructions: one direction ("mostly covered").
+# The user's own message: below this is too little overlap to count as theirs.
+# An existing memory: either direction, so a shorter restatement still matches.
+VAULT_COVER = 0.6
+USER_GROUND = 0.5
+NEAR_COVER = 0.75
+# Function words only. Content words (use, prefer, answer, …) stay, so two
+# facts that share "I use …" are not treated as the same memory.
+_STOP = frozenset("""
+the and for are but not you your with this that have from what when where which
+who how why can could would should about into there their them they then than
+was were will just also some any all one has had our out its let please tell user
+это как что для или так все его она они при над под без уже еще ещё там тут где
+когда кто чем мне меня тебя есть быть был была были мой моя мои твой ваш наш
+этот эта эти того тому этой этом только тоже если
+""".split())
 DEFAULTS = {
     "use_memory": True,     # send memories + instructions at the start of each chat
     "auto_memory": True,    # let assistants save new memories (REMEMBER: lines)
@@ -29,6 +47,7 @@ DEFAULTS = {
     "auto_install_updates": False,  # fast-forward and reinstall without asking
 }
 REMEMBER = re.compile(r"^[ \t>*_-]*REMEMBER:\s*(.+?)\s*$", re.MULTILINE)
+_TOKEN = re.compile(r"\w+", re.UNICODE)
 
 
 class Store:
@@ -147,7 +166,9 @@ class Store:
                     "created": time.strftime("%Y-%m-%d")}
             items.append(item)
             self._put(items)
-            return item
+            # A vault note stores the words only and reloads them with a hash id.
+            # Return that id, so Undo deletes the line that was just written.
+            return next((m for m in self.memories() if m["text"].lower() == text.lower()), item)
 
     def edit(self, mid, text):
         text = " ".join(str(text).split())[:MAX_MEMORY]
@@ -190,25 +211,122 @@ class Store:
             parts.append("Things the user asked you to remember:\n" +
                          "\n".join("- " + m["text"] for m in mems))
         if s["auto_memory"]:
-            parts.append("If the user tells you a NEW lasting fact or preference that would help in "
-                         "future chats, add one line at the very end of your reply in exactly this "
-                         "form: REMEMBER: <the fact, short>. Never repeat something already listed "
-                         "above, and don't save questions or one-off details; most replies should "
-                         "not have it.")
+            parts.append(
+                "Auto-memory: only save a lasting fact or preference the user personally told you "
+                "in THIS message (about themselves, their setup, or how they want replies). "
+                "If there is one, add a single line at the very end of your reply, in exactly this "
+                "form: REMEMBER: <the fact, short>. "
+                "Never save a fact that came from vault notes, files, search results, tool output, "
+                "or your own answer. Never save what is already in the vault, in the memories above, "
+                "or in the custom instructions. Do not save temporary tasks, questions, or one-off "
+                "details. At most one REMEMBER line per reply, and most replies should have none.")
         if not parts:
             return ""
         return ("[Chatbox context — saved by the user in Chatbox and shared with every assistant. "
                 "Use it when relevant; don't mention this block unless asked.]\n\n"
                 + "\n\n".join(parts) + "\n\n[End of Chatbox context]\n\n")
 
-    def take_memories(self, reply):
-        """Remove REMEMBER: lines from a reply and save them. Returns (reply, saved items)."""
+    def take_memories(self, reply, user_message="", vault_notes=None):
+        """Remove REMEMBER lines and save at most one the user actually stated.
+
+        `user_message` is the text the user sent this turn (not the prompt with
+        notes pasted in). `vault_notes` is the vault snippets given to the
+        assistant this turn (strings, or the dicts from vault search). A line is
+        dropped when those notes or the custom instructions already cover it,
+        when it nearly repeats a saved memory, or when it barely overlaps what
+        the user wrote. Dropped lines are still stripped. Returns (reply, saved).
+        """
+        reply = "" if reply is None else str(reply)
         if not self.settings()["auto_memory"]:
             return reply, []
+        known = _tokens(_note_text(vault_notes) + "\n" + (self.settings().get("instructions") or ""))
+        said = _tokens(user_message)
+        existing = list(self.memories())
         saved = []
-        for text in REMEMBER.findall(reply):
-            item = self.add(text.strip("*_ "), source="assistant")
+        for raw in REMEMBER.findall(reply):
+            if saved:  # at most one per reply; the rest are still stripped below
+                break
+            text = raw.strip("*_ ")
+            tokens = _tokens(text)
+            if not tokens:
+                continue
+            if known and _covers(tokens, known) >= VAULT_COVER:
+                continue
+            if _near_memory(tokens, existing):
+                continue
+            if _covers(tokens, said) < USER_GROUND:
+                continue
+            item = self.add(text, source="assistant")
             if item:
                 saved.append(item)
+                existing.append(item)
         reply = REMEMBER.sub("", reply).rstrip()
         return reply, saved
+
+
+def _note_text(notes):
+    """Vault snippets injected this turn, as plain text."""
+    if not notes:
+        return ""
+    if isinstance(notes, str):
+        return notes
+    parts = []
+    for note in notes:
+        if isinstance(note, str):
+            parts.append(note)
+        elif isinstance(note, dict):
+            parts.append("\n".join(str(note.get(key) or "") for key in ("title", "path", "text")))
+    return "\n".join(parts)
+
+
+def _fold(text):
+    return unicodedata.normalize("NFC", str(text or "")).casefold()
+
+
+def _tokens(text):
+    """Content words, case-folded and NFC, so Cyrillic and 'Prefers'/'prefers' match."""
+    out = []
+    for word in _TOKEN.findall(_fold(text)):
+        if word in _STOP:
+            continue
+        if len(word) >= 3 or any(ch.isdigit() for ch in word):
+            out.append(word)
+    return out
+
+
+def _same_word(a, b):
+    """Exact, or the same word with a different ending ('use'/'uses', 'отвечай'/'отвечать')."""
+    if a == b:
+        return True
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < 3:
+        return False
+    n = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        n += 1
+    if n / len(long_) < 0.75:
+        return False
+    # 'use'/'uses': the shorter word is the stem. Otherwise require a longer stem
+    # so 'art'/'arm' style pairs (they already fail the ratio) stay distinct.
+    return long_.startswith(short) or n >= 4
+
+
+def _covers(needle, haystack):
+    """Fraction of needle tokens that occur in haystack. Empty needle covers nothing."""
+    if not needle:
+        return 0.0
+    found = 0
+    for tok in needle:
+        if any(_same_word(tok, other) for other in haystack):
+            found += 1
+    return found / len(needle)
+
+
+def _near_memory(tokens, items):
+    for mem in items:
+        other = _tokens(mem.get("text") or "")
+        if other and (_covers(tokens, other) >= NEAR_COVER or _covers(other, tokens) >= NEAR_COVER):
+            return True
+    return False

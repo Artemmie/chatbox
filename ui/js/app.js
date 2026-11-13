@@ -94,7 +94,8 @@ function render(item, parent){ // one stored item -> DOM. parent defaults to the
   else if(item.r==='plan'){d.className='card';
     d.innerHTML='<div class="ic">'+ICON.plan+'</div><div class="tx"><b>Plan saved</b><span title="'+esc(item.path)+'">'+esc(item.path)+'</span></div>'
       +'<button class="ghost" type="button" data-planopen>Open</button>'+(NOFOLDER(item.b)?'':'<button class="btn" type="button" data-plango>Implement plan</button>');}
-  else{d.className='note';d.innerHTML=esc(item.t)+(item.memId?' <button type="button" data-undo>Undo</button>':'');}
+  else{const mem=!!item.memId;d.className='note'+(mem?' mem':'');
+    d.innerHTML=esc(item.t)+(mem?' <button type="button" data-undo>Undo</button>':'');}
   (parent||thread).appendChild(d);return d;}
 function renderThread(){
   thread.innerHTML='';
