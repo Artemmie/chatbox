@@ -107,6 +107,27 @@ class ServerTests(unittest.TestCase):
         code, _ = request(self.srv, "/api/status", host="evil.example")
         self.assertEqual(code, 403)
 
+    def test_sidebar_projects_replace_the_header_dropdown(self):
+        code, raw = request(self.srv, "/")
+        self.assertEqual(code, 200)
+        self.assertIn(b'id="chatsearch"', raw)
+        self.assertIn(b'id="newproject"', raw)
+        self.assertIn(b">New project<", raw)
+        self.assertIn(b'id="projectcrumb"', raw)
+        self.assertNotIn(b'id="projectpick"', raw)
+        self.assertNotIn(b"<select", raw)
+        code, js = request(self.srv, "/ui/js/app.js")
+        self.assertEqual(code, 200)
+        self.assertIn(b"Move to project", js)
+        self.assertIn(b"proj-collapsed", js)
+        self.assertIn(b"dragstart", js)
+        self.assertIn(b"No project", js)
+        self.assertIn(b"Notes in the vault are not deleted.", js)
+        code, css = request(self.srv, "/ui/style.css")
+        self.assertEqual(code, 200)
+        self.assertIn(b".projectcrumb", css)
+        self.assertIn(b".proj-row", css)
+
     def test_version_is_on_status_and_the_version_endpoint(self):
         with open(os.path.join(os.path.dirname(__file__), "..", "VERSION"), encoding="utf-8") as handle:
             expected = "v" + handle.read().strip().lstrip("vV")
