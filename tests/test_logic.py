@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import unicodedata
 import unittest
 
 import memory
@@ -74,6 +75,40 @@ class VaultTests(unittest.TestCase):
     def test_path_escape_is_rejected(self):
         with self.assertRaises(ValueError):
             self.vault._abs("../outside.md")
+
+    def test_symlinked_folder_and_nfd_name_are_found(self):
+        real = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(real, True))
+        people = os.path.join(real, "People")
+        os.makedirs(people)
+        with open(os.path.join(people, "Егор.md"), "w", encoding="utf-8") as handle:
+            handle.write("# Егор\n\nЕгор работает над telegram-ai.\n")
+        nfd_name = unicodedata.normalize("NFD", "Алёна.md")
+        with open(os.path.join(people, nfd_name), "w", encoding="utf-8") as handle:
+            handle.write("# Алёна\n\nАлёна ведёт заметки.\n")
+        parent = os.path.join(self.root, "telegram-ai")
+        os.makedirs(parent)
+        os.symlink(real, os.path.join(parent, "shizik-memory"), target_is_directory=True)
+        os.symlink(self.root, os.path.join(real, "loop-back"), target_is_directory=True)
+        notes = self.vault._notes()
+        rels = [os.path.relpath(p, self.root).replace("\\", "/") for p in notes]
+        self.assertIn("telegram-ai/shizik-memory/People/Егор.md", rels)
+        self.assertTrue(any(unicodedata.normalize("NFC", r).endswith("Алёна.md") for r in rels))
+        self.assertFalse(any("loop-back" in r for r in rels))
+        egor = self.vault.search("кто такой Егор")
+        self.assertTrue(any(h["path"].replace("\\", "/").endswith("People/Егор.md") for h in egor), egor)
+        alyona = self.vault.search("what do you know about Алёна")
+        self.assertTrue(any(unicodedata.normalize("NFC", h["title"]) == "Алёна" for h in alyona), alyona)
+
+    def test_cli_context_says_to_follow_symlinks(self):
+        box, _tmp = isolate()
+        box.MEMORY.connect_vault(self.root)
+        message, _notes = box._prepare_message({"backend": "claude", "message": "hi", "mode": "ask"})
+        self.assertIn(self.root, message)
+        self.assertIn("rg -L", message)
+        self.assertIn("symlink", message.lower())
+        other, _notes = box._prepare_message({"backend": "chatgpt", "message": "hi", "mode": "ask"})
+        self.assertNotIn("rg -L", other)
 
     def test_save_chat(self):
         rel = self.vault.save_chat([{"role": "you", "text": "Plan the sensors"}], "Claude")

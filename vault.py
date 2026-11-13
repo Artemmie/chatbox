@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 
 MEMORY_NOTE = "Chatbox/Memories.md"
 CHATS_DIR = "Chatbox/Chats"
@@ -102,10 +103,28 @@ class Vault:
             f.write(head + "".join("- " + m["text"] + "\n" for m in items))
         os.replace(full + ".tmp", full)
 
+    def search_hint(self):
+        """Tell a file-searching assistant where the vault is and to follow its symlinks."""
+        return (f"The user's Obsidian vault is at {self.path}. Some folders in it are symlinks "
+                "to other directories. When you search the vault yourself, follow those symlinks "
+                "(for example `rg -L`, or `grep -R`).")
+
     # ---- search ----------------------------------------------------------
     def _notes(self):
+        """Markdown files, including ones reached through a symlinked folder.
+
+        Paths stay as walked from the vault, so a link named telegram-ai/shizik-memory
+        is reported that way and not as the real folder it points at. A symlink that
+        circles back to a directory already walked is skipped.
+        """
         out = []
-        for root, dirs, files in os.walk(self.path):
+        seen = set()
+        for root, dirs, files in os.walk(self.path, followlinks=True):
+            real = os.path.realpath(root)
+            if real in seen:
+                dirs[:] = []
+                continue
+            seen.add(real)
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
             for name in files:
                 if name.endswith(".md"):
@@ -114,21 +133,23 @@ class Vault:
 
     def search(self, query, limit=3, exclude=(), budget=6000):
         """Notes most related to the query: [{path, title, text}], within ~budget characters."""
-        terms = {w for w in (t.lower() for t in WORD.findall(query)) if w not in STOP}
+        folded = unicodedata.normalize("NFC", query or "")
+        terms = {w for w in (t.lower() for t in WORD.findall(folded)) if w not in STOP}
         if not terms:
             return []
         scored = []
         for full in self._notes():
             rel = os.path.relpath(full, self.path)
-            if rel in exclude or rel == MEMORY_NOTE or rel.startswith(CHATS_DIR + "/"):
+            rel_key = rel.replace("\\", "/")
+            if rel_key in exclude or rel_key == MEMORY_NOTE or rel_key.startswith(CHATS_DIR + "/"):
                 continue
             try:
                 with open(full, encoding="utf-8", errors="replace") as f:
                     text = f.read(200_000)
             except OSError:
                 continue
-            title = os.path.splitext(os.path.basename(full))[0].lower()
-            body = text.lower()
+            title = unicodedata.normalize("NFC", os.path.splitext(os.path.basename(full))[0]).lower()
+            body = unicodedata.normalize("NFC", text).lower()
             score, hit = 0, 0
             for t in terms:
                 c = body.count(t)
