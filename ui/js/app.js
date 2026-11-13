@@ -173,13 +173,19 @@ function blocks(text){
 // ===== rendering messages =====
 function scrollDown(){const sc=$('#scroll');sc.scrollTop=sc.scrollHeight;}
 let PROJECTS=[];
+const PROJICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>';
 function renderProject(){
-  const el=$('#projectcrumb');if(!el)return;
-  const name=CHAT&&CHAT.project||'';
-  if(!VAULT&&!name){el.hidden=true;el.textContent='';return;}
-  el.hidden=false;
-  el.textContent=name||'No project';
-  el.title=name?('Project · '+name):'No project';
+  const box=$('#p-project');if(!box)return;
+  const show=!!VAULT;box.hidden=!show;if(!show)return;
+  const current=CHAT&&CHAT.project||'';
+  const names=projectNames();
+  if(current&&names.indexOf(current)<0)names.push(current);
+  const item=(value,label,sub)=>'<button type="button" class="mi'+(value===current?' sel':'')+'" data-project="'+esc(value)+'"><span class="mt"><b>'+esc(label)+'</b>'+(sub?'<span>'+sub+'</span>':'')+'</span>'+ICON.check+'</button>';
+  pick('#p-project',PROJICON+'<span class="lbl">'+esc(current||'Project')+'</span>'+ICON.chev,
+    '<div class="mh">Project</div><div class="mnote">Where this chat is filed in your notes. Chatbox picks one from your message and folder unless you choose.</div>'
+    +item('','No project','')
+    +names.map(n=>item(n,n,'')).join('')
+    +'<button type="button" class="mi" data-newproject><span class="mt"><span>New project…</span></span></button>');
 }
 function setEmpty(){ensureHandoff();const e=!CHAT.items.length;$('#main').classList.toggle('is-empty',e);$('#suggest').hidden=!e;
   $('#title').textContent=e?'':(CHAT.title||'New chat');const ho=$('#p-handoff');if(ho)ho.hidden=e;renderProject();}
@@ -193,7 +199,7 @@ function render(item, parent){ // one stored item -> DOM. parent defaults to the
     d.innerHTML='<div class="bubble">'+(item.t?esc(item.t):'')+files+'</div>'+actionsHTML();}
   else if(item.r==='bot'||item.r==='err'){d.className='m-bot';const b=item.b;const who=NAMES[b]||'Assistant';
     d.innerHTML='<div class="avatar" style="background:'+color(b)+'">'+(INITIAL[b]||who.slice(0,1))+'</div><div class="body"><div class="name">'+who
-      +(item.mode?'<span class="meta">'+MODES[item.mode][0]+(item.model?' · '+esc(item.model):'')+(item.u?usageMeta(item.u):'')+'</span>':'')+'</div>'
+      +(item.mode?'<span class="meta">'+MODES[item.mode][0]+(item.model?' · '+esc(item.model):'')+(item.u?'<span class="more">'+usageMeta(item.u)+'</span>':'')+'</span>':'')+'</div>'
       +(item.r==='err'?'<div class="err">'+esc(item.t)+'</div>'+(/Open Accounts/.test(item.t)?'<div class="row" style="margin-top:8px"><button class="ghost" type="button" data-openacc>Open Accounts</button></div>':'')
         :'<div class="md">'+md(item.t)+'</div>'+actionsHTML())+'</div>';}
   else if(item.r==='plan'){d.className='card';
@@ -387,6 +393,16 @@ async function deleteProject(name){
   const r=await projectAct({action:'delete',name:name});
   if(r&&!r.error&&current){CHAT.project='';CHAT.project_lock=true;renderProject();saveChat();}
   else if(pending)saveChat();}
+// rename the open chat from its title
+$('#title').onclick=async()=>{
+  if(!CHAT.items.some(i=>i.r==='you'))return;
+  const v=await askPrompt('Rename this chat',CHAT.title||'');
+  const t=(v||'').replace(/\s+/g,' ').trim().slice(0,80);
+  if(!t||t===CHAT.title)return;
+  CHAT.title=t;saveChat();};
+// jump back to the newest message
+$('#scroll').addEventListener('scroll',()=>{const sc=$('#scroll');$('#tolatest').hidden=sc.scrollHeight-sc.scrollTop-sc.clientHeight<240;},{passive:true});
+$('#tolatest').onclick=scrollDown;
 $('#chatlist').addEventListener('click',async e=>{
   const more=e.target.closest('.more'),add=e.target.closest('.add');
   const row=e.target.closest('.proj-row');
@@ -472,12 +488,12 @@ function paint(){
   const b=picked[0]||S.backend;
   if(b!==S.backend){S.backend=b;store.set('backend',b);}
   const blabel=picked.length>1?NAMES[b]+' +'+(picked.length-1):NAMES[b];
-  pick('#p-backend','<span class="bdot" style="background:'+color(b)+'"></span>'+sdot(b)+'<span class="lbl">'+blabel+'</span>'+ICON.chev,
+  pick('#p-backend','<span class="bdot" style="background:'+color(b)+'"></span><span class="lbl">'+blabel+'</span>'+ICON.chev,
     '<div class="mh">Assistant'+(picked.length>1?' · select more than one':'')+'</div>'+BACKENDS.map(x=>{const ok=ready(x);const a=ACC[SVC[x]];
       const on=picked.includes(x);
       const sub=!ok?(x==='ollama'?(a&&a.installed?'No models yet':'Not running')+' — see Accounts':(a&&!a.installed?'Not installed':'Not connected')+' — set up in Accounts')
         :on&&picked.length>1?'Asked together':x==='ollama'?'Local models, plain chat':x==='chatgpt'?'Your ChatGPT plan · plain chat':x==='codex'?'Coding agent by OpenAI':x==='claude'?'Claude Code by Anthropic':'Cursor agent';
-      return '<button type="button" class="mi'+(on?' sel':'')+'" data-b="'+x+'"'+(ok?'':' disabled')+'><span class="bdot" style="background:'+color(x)+'"></span>'+sdot(x)+'<span class="mt"><b>'+NAMES[x]+'</b><span>'+sub+'</span></span>'+ICON.check+'</button>';}).join('')
+      return '<button type="button" class="mi'+(on?' sel':'')+'" data-b="'+x+'"'+(ok?'':' disabled')+'><span class="bdot" style="background:'+color(x)+'"></span><span class="mt"><b>'+NAMES[x]+'</b><span>'+sub+'</span></span>'+ICON.check+'</button>';}).join('')
       +'<button type="button" class="mi" data-openacc><span class="mt"><span>Manage accounts…</span></span></button>');
   const chat=picked.every(NOFOLDER);if(chat&&S.mode==='agent')S.mode='ask';
   const limited=picked.filter(NOFOLDER);
@@ -498,7 +514,7 @@ function paint(){
   const who=picked.length>1?picked.map(x=>NAMES[x]).join(', '):NAMES[b];
   $('#hellosub').textContent=S.none?'Connect an assistant in Accounts to get started.':(picked.length>1?'Asking ':'Chatting with ')+who+' · '+MODES[S.mode][0]+' mode';
   $('#foot').textContent=picked.length>1?'Asking '+who+' at the same time. Each one uses its own sign-in, and Stop cancels all of them.'
-    :'Uses your own subscriptions. Assistants can make mistakes — check important info.';
+    :'Enter sends, Shift+Enter adds a line. Assistants can make mistakes — check important info.';
   $('#accbtn').classList.toggle('warn',S.none);
   if(typeof paintClips==='function') paintClips();}
 $('#p-backend').addEventListener('click',e=>{const t=e.target.closest('.mi');if(!t)return;
@@ -534,13 +550,48 @@ function currentModel(){return modelFor(S.backend);}
 function paintModels(){const list=modelCache[S.backend];const cur=currentModel();
   const several=activeChoice().length>1;
   const label=list==='loading'?'Loading…':cur?((list.find(m=>m[0]===cur)||[cur,cur])[1]):'Auto';
-  pick('#p-model',sdot(S.backend)+'<span class="lbl">'+esc(several?NAMES[S.backend]+' · '+label:label)+'</span>'+ICON.chev,
+  pick('#p-model','<span class="lbl">'+esc(several?NAMES[S.backend]+' · '+label:label)+'</span>'+ICON.chev,
     '<div class="mh">Model'+(several?' for '+NAMES[S.backend]:'')+'</div>'+(several?'<div class="mh" style="text-transform:none;letter-spacing:0;font-size:12px">Other selected assistants use their own saved model.</div>':'')
     +'<button type="button" class="mi'+(cur?'':' sel')+'" data-model=""><span class="mt"><b>Auto</b><span>'+(S.backend==='ollama'?'Your most recently downloaded model':'Let '+NAMES[S.backend]+' choose')+'</span></span>'+ICON.check+'</button>'
     +(Array.isArray(list)?list.map(([id,l])=>'<button type="button" class="mi'+(id===cur?' sel':'')+'" data-model="'+esc(id)+'"><span class="mt"><b>'+esc(l)+'</b></span>'+ICON.check+'</button>').join(''):''));}
 $('#p-model').addEventListener('click',e=>{const t=e.target.closest('.mi');if(!t)return;store.set('model_'+S.backend,t.dataset.model);paintModels();$('#p-model').classList.remove('open');});
 
+// Chatbox's own folder list, for when the system has no folder dialog to show
+const FOLDERICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+function browseFolder(start,title){
+  return new Promise(resolve=>{
+    const dlg=$('#dbrowse');let cur=null,done=false;
+    $('#browsetitle').textContent=title||'Choose a folder';
+    const finish=v=>{if(done)return;done=true;dlg.removeEventListener('click',onClick);dlg.removeEventListener('close',onClose);if(dlg.open)dlg.close();resolve(v);};
+    const load=async path=>{
+      $('#browsemsg').textContent='';
+      let r;try{r=await post('/api/browse-folder',{path:path||''});}catch(e){$('#browsemsg').textContent='Could not read that folder.';return;}
+      if(!r||!r.path){$('#browsemsg').textContent=(r&&r.error)||'Could not read that folder.';return;}
+      cur=r;
+      $('#browsepath').textContent=r.path;
+      $('#browseup').disabled=!r.parent;
+      $('#browseuse').textContent=r.vault?'Use this vault':'Use this folder';
+      $('#browselist').innerHTML=r.folders.length?r.folders.map(f=>'<button type="button" class="browseitem" role="option" data-name="'+esc(f.name)+'">'+FOLDERICON+'<span class="t">'+esc(f.name)+'</span>'+(f.vault?'<span class="pill ok">Obsidian vault</span>':'')+'</button>').join('')
+        :'<div class="muted browseempty">'+(r.error?esc(r.error):'No folders in here.')+'</div>';
+      $('#browselist').scrollTop=0;
+      $('#browsemsg').textContent=r.more?'Showing the first '+r.folders.length+' folders.':(r.vault?'This folder is an Obsidian vault.':'');
+    };
+    const onClick=e=>{
+      if(e.target.closest('[data-browsecancel]')){finish(null);return;}
+      if(e.target.closest('#browseuse')){if(cur)finish(cur.path);return;}
+      if(e.target.closest('#browseup')){if(cur&&cur.parent)load(cur.parent);return;}
+      if(e.target.closest('#browsehome')){if(cur)load(cur.home);return;}
+      const it=e.target.closest('.browseitem');
+      if(it&&cur)load(cur.path.replace(/[\\/]+$/,'')+cur.sep+it.dataset.name);
+    };
+    const onClose=()=>finish(null);
+    dlg.addEventListener('click',onClick);dlg.addEventListener('close',onClose);
+    $('#browselist').innerHTML='';$('#browsepath').textContent='';
+    dlg.showModal();load(start);
+  });
+}
 // working folder
+$('#folderbrowse').onclick=async()=>{const v=await browseFolder($('#folderinput').value.trim(),'Choose the working folder');if(v){$('#folderinput').value=v;$('#folderinput').focus();}};
 $('#folderbtn').onclick=()=>{$('#folderinput').value=S.workdir||S.home;$('#dfolder').showModal();$('#folderinput').select();};
 $('#folderform').onsubmit=e=>{e.preventDefault();const v=$('#folderinput').value.trim();$('#dfolder').close();
   if(!v||v===S.workdir)return;S.workdir=v;store.set('workdir',v);
@@ -884,6 +935,8 @@ function renderSettings(p){
   $('#vaultopts').hidden=mode==='off';$('#vaulthint').hidden=mode!=='off';
   if(document.activeElement!==$('#sync_folder'))$('#sync_folder').value=p.settings.sync_folder||'Chatbox';
   if(document.activeElement!==$('#vaultpickpath'))$('#vaultpickpath').value=p.settings.vault_path||'';
+  if(!$('#choosevault').disabled)$('#choosevault').textContent=p.settings.vault_path?'Change…':'Choose folder…';
+  $('#choosevault').classList.toggle('btn',!p.settings.vault_path);$('#choosevault').classList.toggle('ghost',!!p.settings.vault_path);
   if(p.vault)VAULT=p.vault; else if(mode!=='chatbox') VAULT=null;
   $('#obsidianopts').hidden=mode!=='obsidian';
   $('#chatboxopts').hidden=mode!=='chatbox';
@@ -901,23 +954,47 @@ function renderSettings(p){
   const status=$('#notesstatus');
   status.textContent=notes.status||'';
   status.className='notesstatus'+(notes.fallback?' warn':(mode==='off'?' muted':''));
-  if(document.activeElement!==$('#instructions'))$('#instructions').value=p.settings.instructions||'';
+  if(document.activeElement!==$('#instructions')){$('#instructions').value=p.settings.instructions||'';instSaved=$('#instructions').value;}
   $('#auto_update').checked=p.settings.auto_update!==false;
   $('#auto_install_updates').checked=!!p.settings.auto_install_updates;
-  $('#mempath').textContent=p.memories.length+' saved · '+p.path;$('#memclear').disabled=!p.memories.length;
+  $('#mempath').textContent=p.path;$('#memtotal').textContent=p.memories.length?p.memories.length+' saved':'';$('#memclear').disabled=!p.memories.length;
   $('#memlist').innerHTML=p.memories.length?p.memories.map(m=>'<div class="mem" data-id="'+m.id+'"><input class="field" value="'+esc(m.text)+'" maxlength="500"><span class="src">'+(m.source==='assistant'?'by assistant':m.source==='obsidian'?'in Obsidian':'by you')+(m.created?' · '+esc(m.created):'')+'</span><button class="icon" type="button" title="Delete">'+ICON.trash+'</button></div>').join('')
-    :'<div class="muted">No memories yet.</div>';
+    :'<div class="muted">No memories yet. Add one above, or just tell an assistant something about you.</div>';
   $('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';
   applyNotes(p);}
 async function memAct(body){const r=await post(body.settings?'/api/settings':'/api/memory',body);if(r.error)await askAlert(r.error);renderSettings(r);CHAT.ctx=fresh();return r;}
 function refreshMemCount(){fetch('/api/settings').then(r=>r.json()).then(p=>{$('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';if($('#set').open)renderSettings(p);});}
-$('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch('/api/settings').then(r=>r.json()));};
+function showSetTab(name){
+  const tabs=[...document.querySelectorAll('.set-nav [data-tab]')];
+  if(!tabs.some(t=>t.dataset.tab===name)) name=tabs[0].dataset.tab;
+  tabs.forEach(t=>{const on=t.dataset.tab===name;t.setAttribute('aria-selected',on?'true':'false');t.tabIndex=on?0:-1;});
+  document.querySelectorAll('.pane[data-pane]').forEach(p=>{p.hidden=p.dataset.pane!==name;});
+  $('.set-panes').scrollTop=0;
+  try{localStorage.setItem('chatbox.settab',name);}catch(e){}
+}
+async function openSettings(tab){
+  let last='';try{last=localStorage.getItem('chatbox.settab')||'';}catch(e){}
+  showSetTab(tab||last||'memory');
+  if(!$('#set').open)$('#set').showModal();
+  renderSettings(await fetch('/api/settings').then(r=>r.json()));
+}
+$('.set-nav').addEventListener('click',e=>{const t=e.target.closest('[data-tab]');if(t)showSetTab(t.dataset.tab);});
+$('.set-nav').addEventListener('keydown',e=>{
+  if(!['ArrowDown','ArrowUp','ArrowRight','ArrowLeft'].includes(e.key))return;
+  const tabs=[...document.querySelectorAll('.set-nav [data-tab]')];
+  const i=tabs.indexOf(document.activeElement);if(i<0)return;
+  e.preventDefault();
+  const next=tabs[(i+(e.key==='ArrowDown'||e.key==='ArrowRight'?1:tabs.length-1))%tabs.length];
+  showSetTab(next.dataset.tab);next.focus();
+});
+$('#setbtn').onclick=()=>openSettings();
+$('#acc2notes').onclick=e=>{e.preventDefault();$('#acc').close();openSettings('notes');};
 for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','auto_update','auto_install_updates'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
 function showNotesError(text){
   const el=$('#notesstatus');
   el.textContent=text;
   el.className='notesstatus err';
-  if($('#set').open) el.scrollIntoView({block:'nearest'});
+  if($('#set').open) showSetTab('notes');
 }
 function showVaultMsg(text, kind){
   const msg=$('#vaultmsg');
@@ -960,12 +1037,12 @@ document.querySelectorAll('input[name="notes"]').forEach(el=>el.onchange=async()
     if(from==='chatbox'&&path) copy=await askConfirm('Copy the notes Chatbox already saved into this vault? Notes that are already there are left as they are.');
     const r=await post('/api/notes',{mode:'obsidian',copy});
     if(r.error) showNotesError(r.error);
-    else {renderSettings(r); if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});}
+    else {renderSettings(r); if($('#set').open) $('.set-panes').scrollTop=0;}
     return;
   }
   const r=await post('/api/notes',{mode:el.value});
   if(r.error) showNotesError(r.error);
-  else {renderSettings(r); if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});}
+  else {renderSettings(r); if($('#set').open) $('.set-panes').scrollTop=0;}
 });
 $('#syncform').onsubmit=async e=>{e.preventDefault();await memAct({settings:{sync_folder:$('#sync_folder').value}});};
 $('#set').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
@@ -981,6 +1058,13 @@ $('#choosevault').onclick=async()=>{
   try{
     const picked=await post('/api/pick-folder',{});
     if(picked.cancelled) return;
+    if(picked.browse){ // no system dialog here: use Chatbox's own folder list
+      const chosen=await browseFolder($('#vaultpickpath').value.trim(),'Choose your vault folder');
+      if(!chosen) return;
+      $('#vaultpickpath').value=chosen;
+      await saveTypedVault(chosen);
+      return;
+    }
     if(picked.error){showVaultMsg(picked.error,'err');return;}
     if(!picked.path){showVaultMsg('No folder was chosen.','err');return;}
     $('#vaultpickpath').value=picked.path;
@@ -988,9 +1072,26 @@ $('#choosevault').onclick=async()=>{
   }catch(e){
     showNotesError('Could not open the folder picker.');
   }finally{
-    btn.disabled=false; btn.textContent='Change…';
+    btn.disabled=false; btn.textContent=$('#vaultpickpath').value.trim()?'Change…':'Choose folder…';
   }
 };
+$('#p-project').addEventListener('click',async e=>{
+  const t=e.target.closest('.mi');if(!t)return;
+  $('#p-project').classList.remove('open');
+  let value=t.dataset.project||'';
+  if(t.hasAttribute('data-newproject')){
+    const name=await askPrompt('Project name');
+    if(!name||!name.trim())return;
+    value=name.trim();
+    const r=await projectAct({action:'create',name:value});
+    if(!r||r.error)return;
+  }
+  if(value===(CHAT.project||'')&&CHAT.project_lock)return;
+  CHAT.project=value;CHAT.project_lock=true;
+  const row=CHATS.find(c=>c.id===CHAT.id);if(row)row.project=value;
+  saveChat();renderProject();renderChatList();
+  if(CHAT.items.length)note(value?'This chat is now filed under '+value+'.':'This chat is no longer in a project.');
+});
 $('#notebanner').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
 $('#opennotes').onclick=async()=>{
   const r=await post('/api/notes',{action:'open'});
@@ -1014,10 +1115,18 @@ $('#disconnectnotes').onclick=async()=>{
   const r=await post('/api/notes',{mode:choice.id});
   if(r.error){await askAlert(r.error);return;}
   renderSettings(r);
-  if($('#set').open) $('#notesstatus').scrollIntoView({block:'nearest'});
+  if($('#set').open) $('.set-panes').scrollTop=0;
 };
-$('#instsave').onclick=async()=>{await memAct({settings:{instructions:$('#instructions').value}});
-  $('#instmsg').textContent='Saved — new chats will use it.';setTimeout(()=>$('#instmsg').textContent='',3000);};
+let instSaved=null;
+async function saveInstructions(){
+  const v=$('#instructions').value;
+  if(v===instSaved)return;
+  instSaved=v;
+  await memAct({settings:{instructions:v}});
+  $('#instmsg').textContent='Saved — new chats will use it.';setTimeout(()=>$('#instmsg').textContent='',3000);
+}
+$('#instsave').onclick=()=>{instSaved=null;saveInstructions();};
+$('#instructions').addEventListener('change',saveInstructions);
 $('#memadd').onsubmit=async e=>{e.preventDefault();const t=$('#memtext').value.trim();if(!t)return;const r=await memAct({action:'add',text:t});if(!r.error)$('#memtext').value='';};
 $('#memlist').addEventListener('change',e=>{const row=e.target.closest('.mem');if(row)memAct({action:'edit',id:row.dataset.id,text:e.target.value});});
 $('#memlist').addEventListener('click',e=>{const row=e.target.closest('.mem');if(row&&e.target.closest('button'))memAct({action:'delete',id:row.dataset.id});});
@@ -1056,11 +1165,6 @@ $('#savebtn').onclick=async()=>{
 let AUTHSTATUS={backends:[]},authJobSeen=false;
 const AUTH_STATE={ready:1,signed_out:1,missing:1,unknown:1};
 function authOf(id){return (AUTHSTATUS.backends||[]).find(a=>a.id===id);}
-function sdot(id){
-  const a=authOf(id);
-  if(!a||!AUTH_STATE[a.state])return '';
-  const title={ready:'Signed in',signed_out:'Installed, not signed in',missing:'Not installed',unknown:"Couldn't check"}[a.state];
-  return '<span class="sdot '+a.state+'" title="'+esc(title)+'"></span>';}
 function renderAuth(){
   const box=$('#authrow');if(!box)return;
   const rows=AUTHSTATUS.backends||[];
@@ -1072,7 +1176,8 @@ function renderAuth(){
       const tip=a.sign_in_command||(a.id==='chatgpt'?'Continue with ChatGPT':'Sign in');
       extra='<button type="button" class="authsign" data-signin="'+esc(a.id)+'" title="'+esc(tip)+'" aria-label="Sign in to '+esc(a.name)+'">Sign in</button>';}
     else if(a.state==='unknown')extra='<span class="authnote">Couldn\u2019t check</span>';
-    const hint=a.state==='missing'&&a.install_hint?'<div class="authsub" title="'+esc(a.install_hint)+'">'+esc(a.install_hint)+'</div>':'';
+    if(a.state==='missing')extra='<button type="button" class="authsign" data-setup title="'+esc(a.install_hint||'Open Accounts')+'" aria-label="Set up '+esc(a.name)+'">Set up</button>';
+    const hint='';
     return '<div class="authblock" data-auth="'+esc(a.id)+'"><div class="authitem" title="'+esc(a.detail||'')+'"><span class="sdot '+a.state+'"></span><span class="nm">'+esc(a.name)+'</span>'+extra+'</div>'+hint+'</div>';
   }).join('');}
 async function refreshAuth(fresh){
@@ -1097,7 +1202,7 @@ async function startSignIn(id,btn){
     else if(r&&r.error)await askAlert(r.error);
     return;}
   openAccounts();}
-$('#authrow').addEventListener('click',e=>{const btn=e.target.closest('[data-signin]');if(!btn||btn.disabled)return;startSignIn(btn.dataset.signin,btn);});
+$('#authrow').addEventListener('click',e=>{if(e.target.closest('[data-setup]')){openAccounts();return;}const btn=e.target.closest('[data-signin]');if(!btn||btn.disabled)return;startSignIn(btn.dataset.signin,btn);});
 
 // ===== Accounts =====
 let ACC={},ACCLOADED=false,accJSON='',accTimer=null;const codes={};
@@ -1121,34 +1226,55 @@ async function refreshAccounts(fresh){
   if($('#acc').open)accTimer=setTimeout(()=>refreshAccounts(),list.some(a=>a.job&&a.job.state==='running')?1500:15000);
   return list;}
 let ollamaTyped=null; // address being typed (survives the list refreshing)
+const ACC_ABOUT={cursor:'Coding assistant from Cursor. Can read and change files in your folder.',
+  claude:'Anthropic’s assistant. Can read and change files in your folder.',
+  codex:'OpenAI’s coding assistant. Can read and change files in your folder.',
+  chatgpt:'Plain chat with ChatGPT. No files or commands.',
+  ollama:'Free models that run on your own computer. Plain chat: no files or commands.'};
+const accOpen={}; // which "More options" are open (survives the list refreshing)
+function accCard(a,st,need,primary,more,extra){
+  const dot='<span class="bdot" style="background:'+color(a.id)+'"></span>';
+  return '<div class="sec acct" data-acc="'+a.id+'"><div class="acct-h"><div class="acct-id">'
+    +'<div class="sec-h">'+dot+'<b>'+esc(a.name)+'</b><span class="pill '+st[0]+'">'+st[1]+'</span></div>'
+    +'<div class="muted">'+esc(ACC_ABOUT[a.id]||'')+'</div>'
+    +(need?'<div class="acct-need">'+need+'</div>':'')+'</div>'
+    +'<div class="acct-act">'+primary+'</div></div>'+(extra||'')
+    +(more?'<details class="advanced acct-more" data-more="'+a.id+'"'+(accOpen[a.id]?' open':'')+'><summary>More options</summary>'+more+'</details>':'')
+    +'</div>';}
+const moreRow=(btn,text)=>'<div class="acct-opt">'+btn+'<span class="muted">'+text+'</span></div>';
 function ollamaCard(a){
-  const st=!a.installed?['bad','Not running']:a.models?['ok','Running · '+esc(a.account)]:['bad','Running · no models yet'];
-  let h='<div class="sec"><div class="sec-h"><span class="bdot" style="background:var(--ollama)"></span><b>Ollama</b><span class="pill '+st[0]+'">'+st[1]+'</span></div>'
-    +'<div class="muted">'+esc(a.plan)+'. Plain chat: no files or commands.</div>';
-  if(!a.installed)h+='<div class="muted">Install Ollama and start it, then click “Check again”.</div>'
-    +'<div class="row"><button class="btn" data-act="open" data-url="https://ollama.com/download">Get Ollama</button><button class="ghost" data-act="ollamacheck">Check again</button></div>';
-  else if(!a.models)h+='<div class="muted">Download a model in a terminal, then click “Check again”. For example:</div>'
-    +'<div class="row"><code>ollama pull llama3.2</code><button class="ghost" data-act="copycode" data-code="ollama pull llama3.2">Copy</button><button class="ghost" data-act="ollamacheck">Check again</button></div>';
-  else h+='<div class="row"><button class="ghost" data-act="ollamacheck">Refresh models</button></div>';
-  h+='<form class="row" id="ollamaform"><span class="muted">Address</span><input class="field" id="ollamaurl" value="'+esc(ollamaTyped??a.url)+'" placeholder="http://localhost:11434" style="flex:1;min-width:200px"><button class="ghost">Save</button></form></div>';
-  return h;}
+  const st=!a.installed?['bad','Not running']:a.models?['ok','Running']:['warn','No models yet'];
+  const need=a.installed&&a.models?esc(a.account):'Free. No account needed.';
+  let primary,extra='';
+  if(!a.installed){primary='<button class="btn" data-act="open" data-url="https://ollama.com/download">Get Ollama</button><button class="ghost" data-act="ollamacheck">Check again</button>';
+    extra='<div class="acct-step muted">Install Ollama and start it, then click “Check again”.</div>';}
+  else if(!a.models){primary='<button class="ghost" data-act="ollamacheck">Check again</button>';
+    extra='<div class="job"><div class="muted">Download a model in a terminal, then click “Check again”. For example:</div>'
+      +'<div class="row"><code>ollama pull llama3.2</code><button class="ghost" data-act="copycode" data-code="ollama pull llama3.2">Copy</button></div></div>';}
+  else primary='<button class="ghost" data-act="ollamacheck">Refresh models</button>';
+  const more='<div class="muted">Change this only if Ollama runs somewhere else, such as another computer.</div>'
+    +'<form class="row" id="ollamaform"><span class="muted">Address</span><input class="field" id="ollamaurl" value="'+esc(ollamaTyped??a.url)+'" placeholder="http://localhost:11434" style="flex:1;min-width:200px"><button class="ghost">Save</button></form>';
+  return accCard(a,st,need,primary,more,extra);}
 function renderAccounts(list){
+  const on=list.filter(a=>a.id==='ollama'?(a.installed&&a.models):(a.installed&&a.logged_in&&!(a.id==='chatgpt'&&a.plan_blocked))).length;
+  const sum=$('#accsummary');
+  if(sum){sum.textContent=on?on+' of '+list.length+' connected':'Nothing connected yet. Connect one assistant to start chatting.';sum.className='acct-sum'+(on?'':' none');}
   $('#acclist').innerHTML=list.map(a=>{if(a.id==='ollama')return ollamaCard(a);
     const blocked=a.id==='chatgpt'&&a.plan_blocked;
-    const st=!a.installed?['bad','Not installed']:blocked?['bad','Plan not available'+(a.account?' · '+esc(a.account):'')]:a.logged_in?['ok','Connected'+(a.account?' · '+esc(a.account):'')]:['bad','Not signed in'];
+    const st=!a.installed?['bad','Not installed']:blocked?['warn','Plan not available']:a.logged_in?['ok','Connected']:['bad','Not signed in'];
     const busy=a.job&&a.job.state==='running';const dis=busy?' disabled':'';
-    let btns='';
+    let btns='',more='';
+    const other=a.has_client?moreRow('<button class="ghost" data-act="login_new" data-s="chatgpt"'+dis+'>Use a different account</button>','Sign in to ChatGPT with another account.'):'';
     if(!a.installed)btns='<button class="btn" data-act="install" data-s="'+a.id+'"'+dis+'>Install</button>';
-    else if(blocked)btns='<button class="btn" data-act="usecodex">Use Codex</button> <button class="ghost" data-act="login" data-s="chatgpt"'+dis+'>Sign in again</button>'
-      +(a.has_client?' <button class="ghost" data-act="login_new" data-s="chatgpt"'+dis+'>Use a different account</button>':'');
-    else if(!a.logged_in)btns=(a.id==='chatgpt'
-      ?'<button class="btn" data-act="login" data-s="chatgpt" data-oai-siwc-button'+dis+'>Continue with ChatGPT</button>'
-        +(a.has_client?' <button class="ghost" data-act="login_new" data-s="chatgpt"'+dis+'>Use a different account</button>':'')
-      :'<button class="btn" data-act="login" data-s="'+a.id+'"'+dis+'>Sign in</button>'
-      +(a.id==='codex'?' <button class="ghost" data-act="login_browser" data-s="codex"'+dis+' title="Older method: the browser sends you back to Codex on this computer">Sign in with browser redirect</button>':''));
+    else if(blocked){btns='<button class="btn" data-act="usecodex">Use Codex</button><button class="ghost" data-act="login" data-s="chatgpt"'+dis+'>Sign in again</button>';more+=other;}
+    else if(!a.logged_in){
+      if(a.id==='chatgpt'){btns='<button class="btn" data-act="login" data-s="chatgpt" data-oai-siwc-button'+dis+'>Continue with ChatGPT</button>';more+=other;}
+      else{btns='<button class="btn" data-act="login" data-s="'+a.id+'"'+dis+'>Sign in</button>';
+        if(a.id==='codex')more+=moreRow('<button class="ghost" data-act="login_browser" data-s="codex"'+dis+'>Sign in with browser redirect</button>','Older method. Try it if the one-time code sign-in does not work.');}}
     else btns='<button class="ghost" data-act="logout" data-s="'+a.id+'"'+dis+'>Sign out</button>';
-    if(a.installed&&a.id==='codex'&&a.source)btns+=' <button class="ghost" data-act="install" data-s="codex"'+dis+' title="OpenAI’s standalone Codex is newer and supports more models">Install standalone Codex</button>';
-    let notice=blocked?'<div class="muted">'+esc(a.plan_message||'')+'</div>':'';
+    if(a.installed&&a.id==='codex'&&a.source)more+=moreRow('<button class="ghost" data-act="install" data-s="codex"'+dis+'>Install standalone Codex</button>','You are using the Codex '+esc(a.source)+'. OpenAI’s standalone Codex is newer and supports more models.');
+    const need=a.logged_in&&a.account&&a.installed?'Signed in as '+esc(a.account):'Needs: '+esc(a.plan);
+    let notice=blocked?'<div class="acct-step muted">'+esc(a.plan_message||'')+'</div>':'';
     let job='';
     if(a.job){const J=a.job,what={install:'Installing',login:'Signing in',logout:'Signing out'}[J.kind];
       const state=J.state==='running'?what+'…':J.state==='done'?{install:'Installed',login:'Sign-in finished',logout:'Signed out'}[J.kind]+' ✓':J.state==='cancelled'?'Cancelled':J.state==='blocked'?'ChatGPT plan usage is off':J.state==='timeout'?'Sign-in closed':'Something went wrong';
@@ -1156,22 +1282,21 @@ function renderAccounts(list){
       if(J.state==='running'&&J.kind==='login'&&J.user_code){ // Codex device code
         job+='<div class="muted">1. A sign-in page should open in your browser. Sign in to your ChatGPT account.</div>'
           +'<div class="muted">2. Enter this one-time code there (it expires in 15 minutes):</div>'
-          +'<div class="row"><code style="font-size:20px;letter-spacing:.08em;padding:4px 12px">'+esc(J.user_code)+'</code><button class="ghost" data-act="copycode" data-code="'+esc(J.user_code)+'">Copy code</button>'
+          +'<div class="row"><code class="acct-code">'+esc(J.user_code)+'</code><button class="ghost" data-act="copycode" data-code="'+esc(J.user_code)+'">Copy code</button>'
           +(J.url?'<button class="ghost" data-act="open" data-url="'+esc(J.url)+'">Open sign-in page</button>':'')+'</div>'
-          +'<div class="muted">This finishes by itself once you enter the code. If the page says device sign-in is off, turn on “device code authorization” in ChatGPT’s security settings, or use “Sign in with browser redirect”.</div>';}
+          +'<div class="muted">This finishes by itself once you enter the code. If the page says device sign-in is off, turn on “device code authorization” in ChatGPT’s security settings, or use “Sign in with browser redirect” under More options.</div>';}
       else if(J.state==='running'&&J.kind==='login'){
         job+='<div class="muted">Your browser should open. Sign in there'+(a.id==='claude'?', then copy the code it shows and paste it below.':' and this finishes by itself.')+'</div>';
         if(J.url)job+='<div class="row"><button class="ghost" data-act="open" data-url="'+esc(J.url)+'">Open sign-in page</button></div>';
         if(a.id==='codex')job+='<div class="muted">Keep the ChatGPT app closed while signing in: it can cancel this sign-in.</div>';
         if(a.id==='chatgpt')job+='<div class="muted">If you close the browser, click Cancel. Chatbox will not keep asking.</div>';}
+      if(J.state==='running')job+='<div class="muted">Keep Chatbox open until this finishes.</div>';
       if(J.last&&J.state!=='cancelled'&&J.state!=='blocked'&&!/^(Opening browser|If the browser)/.test(J.last))job+='<div class="muted">'+esc(J.last)+'</div>';
       if(J.asks_code)job+='<div class="row"><input class="field" id="code_'+a.id+'" placeholder="Paste the code from the browser" value="'+esc(codes[a.id]||'')+'"><button class="btn" data-act="input" data-s="'+a.id+'">Submit code</button></div>';
       if(J.output)job+='<details'+(J.state==='failed'?' open':'')+'><summary class="muted">Details</summary><pre>'+esc(J.output)+'</pre></details>';
       job+='<div class="row">'+(J.state==='running'?'<button class="ghost" data-act="cancel" data-s="'+a.id+'">Cancel</button>':'<button class="ghost" data-act="dismiss" data-s="'+a.id+'">OK</button>')+'</div></div>';}
-    const dots='<span class="bdot" style="background:'+color(a.id==='codex'?'codex':a.id)+'"></span>';
-    return '<div class="sec"><div class="sec-h">'+dots+'<b>'+esc(a.name)+'</b><span class="pill '+st[0]+'">'+st[1]+'</span></div>'
-      +'<div class="muted">Needs: '+esc(a.plan)+(a.source?' · Codex '+esc(a.source):'')+'</div>'
-      +notice+'<div class="row">'+btns+'</div>'+job+'</div>';}).join('');}
+    return accCard(a,st,need,btns,more,notice+job);}).join('');}
+$('#acclist').addEventListener('toggle',e=>{const d=e.target.closest&&e.target.closest('[data-more]');if(d)accOpen[d.dataset.more]=d.open;},true);
 $('#acclist').addEventListener('input',e=>{if(e.target.id==='ollamaurl')ollamaTyped=e.target.value;if(e.target.id&&e.target.id.startsWith('code_'))codes[e.target.id.slice(5)]=e.target.value;});
 $('#acclist').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id&&e.target.id.startsWith('code_')){e.preventDefault();e.target.nextElementSibling.click();}});
 function ollamaRefresh(){delete modelCache.ollama;if(S.backend==='ollama')loadModels();accJSON='';refreshAuth(true);return refreshAccounts(true);}
@@ -1250,20 +1375,42 @@ function usageMeta(u){return (u.tok?' · '+fmtN(u.tok)+' tokens':'')+(u.s?' · '
 const U={days:+(store.get('u_days')||30),metric:store.get('u_metric')||'messages',data:null};
 async function loadUsage(){U.data=await fetch('/api/usage?days='+U.days).then(r=>r.json());renderUsage();}
 function renderUsage(){const d=U.data;if(!d)return;
-  document.querySelectorAll('#u-range button').forEach(b=>b.classList.toggle('on',+b.dataset.d===U.days));
-  document.querySelectorAll('#u-metric button').forEach(b=>b.classList.toggle('on',b.dataset.k===U.metric));
+  document.querySelectorAll('#u-range button').forEach(b=>{const on=+b.dataset.d===U.days;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on);});
+  document.querySelectorAll('#u-metric button').forEach(b=>{const on=b.dataset.k===U.metric;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on);});
+  const empty=!d.count;
+  $('#u-empty').hidden=!empty;$('#u-body').hidden=empty;$('#u-clearrow').hidden=empty;
+  $('#u-empty').querySelector('span').textContent=U.days?'No messages in the last '+U.days+' days. Try “All time”, or send a message and it shows up here.':'Send a message and your usage shows up here.';
+  const anyCost=UORDER.some(b=>d.totals[b].has_cost);
+  $('#u-costnote').hidden=!anyCost;
+  if(empty)return;
+  const used=UORDER.filter(b=>d.totals[b].messages>0);
+  const all=used.reduce((a,b)=>{const t=d.totals[b];a.m+=t.messages;a.tok+=t.input+t.output;a.s+=t.seconds;a.err+=t.errors;return a;},{m:0,tok:0,s:0,err:0});
+  const top=used.slice().sort((x,y)=>d.totals[y].messages-d.totals[x].messages)[0];
+  const days=d.series.filter(x=>UORDER.some(b=>x[b].messages>0)).length;
+  const stat=(v,l)=>'<div class="ustat"><b>'+v+'</b><span>'+l+'</span></div>';
+  $('#u-sum').innerHTML=stat(fmtN(all.m),all.m===1?'message':'messages')
+    +stat(days,days===1?'active day':'active days')
+    +stat(fmtS(all.s/all.m),'average reply time')
+    +stat('<span class="bdot" style="background:'+color(top)+'"></span>'+NAMES[top],'most used')
+    +(all.err?stat(all.err,all.err===1?'failed reply':'failed replies'):'');
   $('#u-tiles').innerHTML=UORDER.map(b=>{const t=d.totals[b];
-    return '<div class="tile"><div class="tn"><span class="bdot" style="background:'+color(b)+'"></span>'+NAMES[b]+'</div>'
+    const head='<div class="tn"><span class="bdot" style="background:'+color(b)+'"></span>'+NAMES[b]+'</div>';
+    if(!t.messages)return '<div class="tile idle">'+head+'<div class="sm">Not used'+(U.days?' in this period':' yet')+'</div></div>';
+    return '<div class="tile">'+head
       +'<div class="big">'+fmtN(t.messages)+'</div><div class="sm">'+(t.messages===1?'message':'messages')+(t.errors?' · '+t.errors+' failed':'')+'</div>'
-      +'<div class="sm">'+fmtN(t.input+t.output)+' tokens'+(t.messages?' · avg '+fmtS(t.seconds/t.messages):'')+'</div>'
+      +'<div class="sm">'+fmtN(t.input+t.output)+' tokens · avg '+fmtS(t.seconds/t.messages)+'</div>'
       +(t.has_cost?'<div class="sm">≈ '+fmt$(t.cost)+' at API prices</div>':'')+'</div>';}).join('');
   $('#u-charttitle').textContent=(U.metric==='tokens'?'Tokens':'Messages')+' per day';
-  $('#u-legend').innerHTML=UORDER.map(b=>'<span><i style="background:'+color(b)+'"></i>'+NAMES[b]+'</span>').join('');
+  $('#u-tokhelp').hidden=U.metric!=='tokens';
+  $('#u-legend').innerHTML=used.map(b=>'<span><i style="background:'+color(b)+'"></i>'+NAMES[b]+'</span>').join('');
   drawChart(d.series,U.metric);
-  $('#u-modes').textContent=d.count?'Ask '+d.modes.ask+' · Plan '+d.modes.plan+' · Agent '+d.modes.agent:'';
-  $('#u-models').innerHTML=d.models.length?'<table class="utable"><thead><tr><th>Assistant</th><th>Model</th><th class="n">Messages</th><th class="n">Tokens in</th><th class="n">Tokens out</th><th class="n">Avg time</th><th class="n">Cost</th></tr></thead><tbody>'
-    +d.models.map(m=>'<tr><td><span class="row" style="gap:6px"><span class="bdot" style="background:'+color(m.backend)+'"></span>'+NAMES[m.backend]+'</span></td><td>'+esc(m.model)+'</td><td class="n">'+m.messages+'</td><td class="n">'+fmtN(m.input)+'</td><td class="n">'+fmtN(m.output)+'</td><td class="n">'+fmtS(m.seconds/m.messages)+'</td><td class="n">'+(m.has_cost?fmt$(m.cost):'—')+'</td></tr>').join('')+'</tbody></table>'
-    :'<div class="uempty">No usage yet — send a message and it shows up here.</div>';}
+  const MODES=[['ask','Ask','questions only, nothing changed'],['plan','Plan','wrote a plan first'],['agent','Agent','edited files or ran commands']];
+  const mt=MODES.reduce((a,m)=>a+(d.modes[m[0]]||0),0)||1;
+  $('#u-modes').innerHTML=MODES.map(m=>{const n=d.modes[m[0]]||0,pc=Math.round(100*n/mt);
+    return '<div class="umode"><span class="um-n"><b>'+m[1]+'</b><span class="muted">'+m[2]+'</span></span><span class="um-bar"><i style="width:'+pc+'%"></i></span><span class="um-v">'+n+' · '+pc+'%</span></div>';}).join('');
+  $('#u-modelcount').textContent=d.models.length+(d.models.length===1?' model':' models');
+  $('#u-models').innerHTML='<table class="utable"><thead><tr><th>Assistant</th><th>Model</th><th class="n">Messages</th><th class="n" title="Text sent to the assistant">Tokens sent</th><th class="n" title="Text the assistant wrote back">Tokens received</th><th class="n">Avg time</th>'+(anyCost?'<th class="n">Cost</th>':'')+'</tr></thead><tbody>'
+    +d.models.map(m=>'<tr><td><span class="row" style="gap:6px;flex-wrap:nowrap"><span class="bdot" style="background:'+color(m.backend)+'"></span>'+NAMES[m.backend]+'</span></td><td>'+esc(m.model)+'</td><td class="n">'+m.messages+'</td><td class="n">'+fmtN(m.input)+'</td><td class="n">'+fmtN(m.output)+'</td><td class="n">'+fmtS(m.seconds/m.messages)+'</td>'+(anyCost?'<td class="n">'+(m.has_cost?fmt$(m.cost):'—')+'</td>':'')+'</tr>').join('')+'</tbody></table>';}
 function drawChart(series,key){
   const box=$('#u-chart'),W=box.clientWidth||800,H=box.clientHeight||220,L=40,B=22,T=8;
   const vals=series.map(d=>UORDER.reduce((a,b)=>a+d[b][key],0));const max=Math.max(1,...vals);
@@ -1292,7 +1439,7 @@ function drawChart(series,key){
 $('#usebtn').onclick=()=>{$('#usage').showModal();loadUsage();};
 $('#u-range').onclick=e=>{const b=e.target.closest('button');if(!b)return;U.days=+b.dataset.d;store.set('u_days',U.days);loadUsage();};
 $('#u-metric').onclick=e=>{const b=e.target.closest('button');if(!b)return;U.metric=b.dataset.k;store.set('u_metric',U.metric);renderUsage();};
-$('#u-note').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a)post('/api/open',{url:a.dataset.href});});
+$('#u-note').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
 $('#u-clear').onclick=async()=>{if(!await askConfirm('Clear all usage statistics? Chats and memories are not affected.'))return;await post('/api/usage',{action:'clear'});loadUsage();};
 addEventListener('resize',()=>{if($('#usage').open)renderUsage();});
 
