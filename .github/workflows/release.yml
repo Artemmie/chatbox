@@ -179,6 +179,17 @@ jobs:
           rm -f SHA256SUMS
           sha256sum -- * > SHA256SUMS
           ls -lh
-          gh release create "${GITHUB_REF_NAME}" ./* \
-            --title "${GITHUB_REF_NAME}" \
-            --notes "Downloads for Linux, macOS and Windows. Checksums are in SHA256SUMS. See SIGNING.md for Gatekeeper and SmartScreen when the build is unsigned."
+          # dist/ is only downloaded artifacts, so gh has no local git checkout.
+          # --repo selects the repository, and --verify-tag uses the existing
+          # remote tag instead of creating one from a local HEAD.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"; then
+            gh release upload "$GITHUB_REF_NAME" ./* \
+              --clobber \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" ./* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$GITHUB_REF_NAME" \
+              --notes "Downloads for Linux, macOS and Windows. Checksums are in SHA256SUMS. See SIGNING.md for Gatekeeper and SmartScreen when the build is unsigned."
+          fi
