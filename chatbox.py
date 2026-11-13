@@ -670,8 +670,10 @@ def settings_payload():
 
 
 def status():
+    info = updatemod.version_info()
     return {"cursor": bool(find("cursor-agent")), "claude": bool(find("claude")),
-            "codex": bool(find("codex")), "chatgpt": bool(find("codex")), "home": HOME}
+            "codex": bool(find("codex")), "chatgpt": bool(find("codex")), "home": HOME,
+            "version": info["version"], "version_url": info["url"]}
 
 
 def _updates_busy():
@@ -762,6 +764,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, body, ctype, {"Cache-Control": "no-cache"})
         if self.path == "/api/status":
             return self._send(200, json.dumps(status()))
+        if self.path == "/api/version":
+            return self._send(200, json.dumps(updatemod.version_info()))
         if self.path.startswith("/api/models?backend="):
             return self._send(200, json.dumps(list_models(self.path.split("=", 1)[1])))
         if self.path == "/api/settings":

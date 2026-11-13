@@ -89,12 +89,29 @@ class ServerTests(unittest.TestCase):
         code, raw = request(self.srv, "/")
         self.assertEqual(code, 200)
         self.assertIn(b"/ui/js/app.js", raw)
+        self.assertIn(b'id="sidever"', raw)
+        self.assertIn(b'id="aboutver"', raw)
+        self.assertIn(b">About<", raw)
         code, raw = request(self.srv, "/ui/style.css")
         self.assertEqual(code, 200)
         self.assertIn(b"--bg", raw)
         self.assertIsNone(self.box.ui_file("/ui/../../chatbox.py"))
         code, _ = request(self.srv, "/api/status", host="evil.example")
         self.assertEqual(code, 403)
+
+    def test_version_is_on_status_and_the_version_endpoint(self):
+        with open(os.path.join(os.path.dirname(__file__), "..", "VERSION"), encoding="utf-8") as handle:
+            expected = "v" + handle.read().strip().lstrip("vV")
+        code, raw = request(self.srv, "/api/version")
+        self.assertEqual(code, 200)
+        info = json.loads(raw)
+        self.assertEqual(info["version"], expected)
+        self.assertTrue(info["url"].endswith("/releases/tag/" + expected))
+        code, raw = request(self.srv, "/api/status")
+        self.assertEqual(code, 200)
+        body = json.loads(raw)
+        self.assertEqual(body["version"], info["version"])
+        self.assertEqual(body["version_url"], info["url"])
 
     def test_streams_and_falls_back_when_a_flag_is_unknown(self):
         evs = self.events({"backend": "claude", "message": "hi", "mode": "ask", "workdir": self.tmp})

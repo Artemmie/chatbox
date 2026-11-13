@@ -71,7 +71,7 @@ def main():
 
     view = Window()
     view.setPage(QWebEnginePage(profile, view))
-    view.setWindowTitle("Chatbox")
+    view.setWindowTitle(chatbox.updatemod.window_title())
     view.resize(1000, 760)
     view.load(QUrl(f"http://127.0.0.1:{srv.server_address[1]}/"))
     view.show()
