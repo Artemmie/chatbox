@@ -88,15 +88,23 @@ def inside(parent, child):
 
 
 def root_for(store):
-    """Absolute sync folder, or None when sync is off or the vault is missing."""
+    """Absolute sync folder, or None when sync is off or the vault is missing.
+
+    notes_storage=obsidian follows vault_path (notes_dir falls back only when that
+    path is missing). notes_storage=chatbox always uses Chatbox's own folder, even
+    if a vault_path is also saved. An older settings file with no notes_storage
+    still waits for sync_chats.
+    """
     try:
         settings = store.settings()
     except Exception:
         return None
-    mode = store.notes_mode() if hasattr(store, "notes_mode") else ""
-    if mode == "off":
+    explicit = settings.get("notes_storage") or ""
+    if explicit == "off":
         return None
-    if mode != "chatbox" and not settings.get("sync_chats"):
+    if explicit not in ("obsidian", "chatbox") and not settings.get("sync_chats"):
+        return None
+    if hasattr(store, "notes_mode") and store.notes_mode() == "off":
         return None
     vault = store.vault()
     if not vault:
@@ -1478,6 +1486,37 @@ def move_existing(data_dir, root):
             write_memories(root, existing + added)
             memory_count = len(added)
     return {"copied": copied, "memories": memory_count, "path": root}
+
+
+def relocate(store):
+    """Copy local chats into the current notes folder. Safe to run again.
+
+    An id that already has a note is left where it is, so changing the sync
+    folder (or saving it twice) does not create a second copy.
+    """
+    try:
+        moved = backfill_local(store)
+    except Exception:
+        moved = {"copied": 0, "moved": 0}
+    if not isinstance(moved, dict):
+        moved = {"copied": 0, "moved": 0}
+    if moved.get("copied") or moved.get("moved"):
+        return moved
+    root = root_for(store)
+    if not root:
+        return moved
+    try:
+        data_dir = store.dir
+    except Exception:
+        return moved
+    try:
+        extra = move_existing(data_dir, root)
+    except Exception:
+        return moved
+    if isinstance(extra, dict):
+        extra["moved"] = moved.get("moved") or 0
+        return extra
+    return moved
 
 
 def describe(store):

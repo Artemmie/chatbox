@@ -13,12 +13,13 @@ import runtime
 HERE = runtime.source_root()
 sys.path.insert(0, HERE)
 import chatbox  # noqa: E402
+import folderpick  # noqa: E402
 
-from PyQt6.QtCore import QUrl  # noqa: E402
+from PyQt6.QtCore import QObject, QUrl, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import QIcon  # noqa: E402
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile  # noqa: E402
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
 PORT = 8766  # fixed so saved settings survive restarts; any free port if taken
 
@@ -44,6 +45,48 @@ class Window(QWebEngineView):
                 event.ignore()
                 return
         event.accept()
+
+
+class FolderBridge(QObject):
+    """Show QFileDialog on the GUI thread when the page asks to pick a folder.
+
+    The HTTP handler runs on a worker thread, so it emits `requested` and waits.
+    Cancel leaves the path empty. A dialog that never closes hits the timeout.
+    """
+
+    requested = pyqtSignal(int, str)
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+        self._event = threading.Event()
+        self._result = {"path": "", "cancelled": True}
+        self._lock = threading.Lock()
+        self._token = 0
+        self.requested.connect(self._show)
+
+    def _show(self, token, initial):
+        start = initial if initial and os.path.isdir(os.path.expanduser(initial)) else ""
+        chosen = QFileDialog.getExistingDirectory(self._window, "Choose vault folder", start)
+        # A timed-out request has a newer token. Ignore this dialog so it cannot
+        # answer the next one.
+        if token != self._token:
+            return
+        if chosen:
+            self._result = {"path": chosen, "cancelled": False}
+        else:
+            self._result = {"path": "", "cancelled": True}
+        self._event.set()
+
+    def pick(self, initial="", timeout=120):
+        with self._lock:
+            self._token += 1
+            token = self._token
+            self._event.clear()
+            self.requested.emit(token, initial or "")
+            if not self._event.wait(timeout or 120):
+                return {"path": "", "cancelled": False, "error": "The folder picker timed out."}
+            return dict(self._result)
 
 
 def start_server():
@@ -75,6 +118,7 @@ def main():
     view.resize(1000, 760)
     view.load(QUrl(f"http://127.0.0.1:{srv.server_address[1]}/"))
     view.show()
+    folderpick.set_bridge(FolderBridge(view).pick)
 
     code = app.exec()
     srv.shutdown()
