@@ -277,7 +277,7 @@ class ReadableNoteTests(unittest.TestCase):
         loaded = sync.load_chat(self.root, cid)
         self.assertFalse(os.path.exists(legacy))
         names = chat_files(self.root)
-        self.assertEqual(names, [f"{day} Sensor plan.md"])
+        self.assertEqual(names, ["Sensor plan.md"])
         text = open(os.path.join(folder, names[0]), encoding="utf-8").read()
         self.assertNotIn("1794576221436", text)
         self.assertNotIn("1794576514", text)
@@ -292,7 +292,7 @@ class ReadableNoteTests(unittest.TestCase):
         self.assertEqual(loaded["items"][1]["model"], "Sonnet")
         self.assertEqual(loaded["items"][1]["b"], "claude")
         note = open(os.path.join(self.root, "Chatbox.md"), encoding="utf-8").read()
-        self.assertIn(f"[[{day} Sensor plan]]", note)
+        self.assertIn("[[Sensor plan]]", note)
         again = chat_files(self.root)
         sync.list_chats(self.root)
         self.assertEqual(chat_files(self.root), again)
@@ -328,8 +328,9 @@ class ReadableNoteTests(unittest.TestCase):
         suffixed = [name for name in names if "(" in name]
         self.assertEqual(plain, [name for name in names if name.endswith("Same title.md")])
         self.assertEqual(len(suffixed), 1)
-        self.assertIn(second[:6], suffixed[0])
+        self.assertIn("(2)", suffixed[0])
         self.assertNotIn(first[:6], suffixed[0])
+        self.assertNotIn(second[:6], suffixed[0])
         self.assertEqual(sync.load_chat(self.root, first)["items"][0]["t"], "Hi")
         self.assertEqual(sync.load_chat(self.root, second)["items"][0]["t"], "Other")
 
@@ -340,7 +341,7 @@ class ReadableNoteTests(unittest.TestCase):
                                    "items": [{"r": "you", "t": "Hi"}]})
         name = chat_files(self.root)[0]
         self.assertNotRegex(name, r'[\\/:*?"<>|]')
-        self.assertLessEqual(len(name.split(" ", 1)[1][:-3]), 60)
+        self.assertLessEqual(len(os.path.splitext(name)[0]), 60)
         loaded = sync.load_chat(self.root, "ccc333ccc333")
         self.assertEqual(loaded["title"], title)
 

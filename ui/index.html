@@ -28,6 +28,7 @@
     <header class="top">
       <button class="icon" id="sideopen" title="Open sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
       <div class="title" id="title"></div>
+      <select id="projectpick" class="projectpick" hidden title="Obsidian project"></select>
       <button class="pillbtn" id="savebtn" hidden title="Save this chat as a note in your Obsidian vault"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6"/></svg>Save to Obsidian</button>
     </header>
     <div id="scroll">
@@ -114,6 +115,15 @@
       <div id="syncneed" class="muted">Connect an Obsidian vault in Accounts first.</div>
       <div id="syncopts">
         <label class="chk"><input type="checkbox" id="sync_chats"> Sync chats and memory through the vault</label>
+        <div id="syncnotice" class="notice" hidden>
+          <span id="syncnoticetext">Obsidian not found.</span>
+          <a id="obsdownload" data-href="https://obsidian.md/download">Download Obsidian</a>
+          <button type="button" class="ghost" id="choosevault">Choose vault folder</button>
+        </div>
+        <form id="vaultpick" class="row" hidden>
+          <input class="field" id="vaultpickpath" placeholder="Vault folder, e.g. ~/Documents/MyVault" style="flex:1;min-width:160px">
+          <button class="ghost">Connect</button>
+        </form>
         <form class="row" id="syncform"><span class="muted">Sync folder</span><input class="field" id="sync_folder" placeholder="Chatbox" style="flex:1;min-width:160px"><button class="ghost">Save</button></form>
         <div class="muted" id="syncstatus"></div>
         <button class="ghost" id="syncmove" type="button">Move existing chats to sync folder</button>

@@ -27,7 +27,7 @@ function stopTurns(){for(const [id,ac] of inflight){post('/api/cancel',{turn_id:
 const S={backend:store.get('backend')||'claude',mode:store.get('mode')||'ask',busy:false,none:false,
   workdir:store.get('workdir')||'',home:''};
 let CHAT=null; // current conversation
-function newChatState(){return {id:null,title:'',created:Date.now(),backend:S.backend,items:[],sessions:fresh(),ctx:fresh(),sent:fresh()};}
+function newChatState(){return {id:null,title:'',created:Date.now(),backend:S.backend,project:'',project_lock:false,items:[],sessions:fresh(),ctx:fresh(),sent:fresh()};}
 
 // ===== markdown =====
 function inline(t){
@@ -77,8 +77,21 @@ function blocks(text){
 
 // ===== rendering messages =====
 function scrollDown(){const sc=$('#scroll');sc.scrollTop=sc.scrollHeight;}
+let PROJECTS=[];
+function renderProject(){
+  const sel=$('#projectpick');if(!sel)return;
+  const show=!!VAULT;sel.hidden=!show;if(!show)return;
+  const current=CHAT&&CHAT.project||'';
+  let html='<option value="">No project</option>';
+  const names=PROJECTS.map(p=>p.name);
+  if(current&&names.indexOf(current)<0)names.push(current);
+  names.forEach(name=>{html+='<option value="'+esc(name)+'">'+esc(name)+'</option>';});
+  html+='<option value="__new__">New project…</option>';
+  const focus=document.activeElement===sel;
+  if(!focus){sel.innerHTML=html;sel.value=current||'';}
+}
 function setEmpty(){const e=!CHAT.items.length;$('#main').classList.toggle('is-empty',e);$('#suggest').hidden=!e;
-  $('#title').textContent=e?'':(CHAT.title||'New chat');}
+  $('#title').textContent=e?'':(CHAT.title||'New chat');renderProject();}
 function actionsHTML(withRemember=true){return '<div class="actions"><button type="button" data-copy>'+ICON.copy+'Copy</button>'
   +(withRemember?'<button type="button" data-remember>'+ICON.brain+'Remember</button>':'')+'</div>';}
 function render(item, parent){ // one stored item -> DOM. parent defaults to the thread.
@@ -139,8 +152,8 @@ function saveChat(){if(!CHAT.items.some(i=>i.r==='you'))return;
   saveTimer=setTimeout(async()=>{const items=CHAT.items.filter(i=>!i.temp);
     const list=await post('/api/chats',{action:'save',chat:{...CHAT,items}});
     const row=Array.isArray(list)&&list.find(c=>c.id===CHAT.id);
-    if(row)CHAT.updated=row.updated;
-    renderChatList(list);},250);
+    if(row){CHAT.updated=row.updated;if(!CHAT.project_lock&&row.project!==undefined)CHAT.project=row.project||'';}
+    renderChatList(list);renderProject();},250);
   setEmpty();}
 function renderChatList(list){
   if(!Array.isArray(list))return;
@@ -456,6 +469,16 @@ function renderSettings(p){
   $('#syncneed').hidden=!!sync.vault;$('#syncopts').hidden=!sync.vault;
   $('#sync_chats').checked=!!p.settings.sync_chats;
   if(document.activeElement!==$('#sync_folder'))$('#sync_folder').value=p.settings.sync_folder||'Chatbox';
+  if(p.vault)VAULT=p.vault;
+  const app=p.obsidian_app||{};
+  const blocked=!p.vault;
+  $('#syncnotice').hidden=!blocked;
+  if(blocked){
+    const missing=!app.installed;
+    $('#syncnoticetext').textContent=missing?'Obsidian not found. ':(app.notice||'No Obsidian vault selected.');
+    $('#obsdownload').hidden=!missing;
+  }
+  PROJECTS=p.projects||[];renderProject();
   $('#syncstatus').textContent=sync.active?('Syncing in '+sync.path):(sync.vault?'Sync is off. Chats stay on this computer.':'');
   if(document.activeElement!==$('#instructions'))$('#instructions').value=p.settings.instructions||'';
   $('#auto_update').checked=p.settings.auto_update!==false;
@@ -469,6 +492,18 @@ function refreshMemCount(){fetch('/api/settings').then(r=>r.json()).then(p=>{$('
 $('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch('/api/settings').then(r=>r.json()));};
 for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','sync_chats','auto_update','auto_install_updates'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
 $('#syncform').onsubmit=async e=>{e.preventDefault();await memAct({settings:{sync_folder:$('#sync_folder').value}});};
+$('#set').addEventListener('click',e=>{const a=e.target.closest('a[data-href]');if(a){e.preventDefault();post('/api/open',{url:a.dataset.href});}});
+$('#choosevault').onclick=()=>{$('#vaultpick').hidden=false;$('#vaultpickpath').focus();};
+$('#vaultpick').onsubmit=async e=>{e.preventDefault();const v=$('#vaultpickpath').value.trim();if(v)await obsAct({action:'connect',path:v});};
+$('#projectpick').onchange=()=>{
+  let value=$('#projectpick').value;
+  if(value==='__new__'){
+    const name=prompt('Project name');
+    if(!name||!name.trim()){renderProject();return;}
+    value=name.trim();
+  }
+  CHAT.project=value;CHAT.project_lock=true;saveChat();renderProject();
+};
 $('#syncmove').onclick=async()=>{
   if(!$('#sync_chats').checked){alert('Turn on sync first. The copies stay in the vault; the originals on this computer are not deleted.');return;}
   const r=await post('/api/sync',{action:'move'});
@@ -489,7 +524,7 @@ document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>b.closest('di
 // ===== Obsidian =====
 let VAULT=null;
 function renderObsidian(p){
-  VAULT=p.vault;$('#savebtn').hidden=!VAULT;
+  VAULT=p.vault;PROJECTS=p.projects||[];$('#savebtn').hidden=!VAULT;renderProject();
   let h='<div class="sec-h"><b>Obsidian</b><span class="pill '+(VAULT?'ok">Connected · '+esc(VAULT.name)+' · '+VAULT.notes+' notes':'bad">Not connected')+'</span></div>'
     +'<div class="muted">Long-term memory shared by every assistant. Your vault stays on this computer; no sign-in needed. Related notes are sent only to the assistant you chat with.</div>';
   if(VAULT)h+='<code class="path">'+esc(VAULT.path)+'</code><div class="row"><button class="ghost" data-obs="disconnect">Disconnect</button></div>';
