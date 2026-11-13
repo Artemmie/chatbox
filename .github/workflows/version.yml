@@ -1,0 +1,72 @@
+name: Version
+
+# After a merge to main, tag the next release and build it.
+# Pushing the tag with GITHUB_TOKEN does not start release.yml.
+# workflow_dispatch does, and the run checks out that tag.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Write VERSION, tag, and start the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A merge that landed while this job waited is part of the same release.
+          git fetch origin main --tags --force
+          git checkout -B main origin/main
+          ver="$(python scripts/next_version.py)"
+          if [ -z "$ver" ]; then
+            echo "No release for this push."
+            exit 0
+          fi
+          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Refusing to tag unexpected version: $ver" >&2
+            exit 1
+          fi
+          printf '%s\n' "$ver" > VERSION
+          git add VERSION
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: release v${ver} [skip ci]"
+          fi
+          if ! git rev-parse -q --verify "refs/tags/v${ver}" >/dev/null; then
+            git tag "v${ver}"
+          fi
+          git push origin HEAD:main
+          git push origin "v${ver}"
+          # The tag has to be visible before the release workflow can check it out.
+          started=0
+          for _ in 1 2 3 4 5 6; do
+            if gh workflow run release.yml --ref "v${ver}"; then
+              started=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$started" != 1 ]; then
+            echo "release.yml did not start for v${ver}" >&2
+            exit 1
+          fi
+          echo "Release v${ver} is building."

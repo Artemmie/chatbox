@@ -74,9 +74,17 @@ def version_parts(text):
 
 
 def version_is_newer(remote, local):
+    """True when remote is a higher semantic version. v1.0.10 is newer than v1.0.9."""
     left, right = version_parts(remote), version_parts(local)
     if left is None or right is None:
-        return bool(remote) and str(remote).lstrip("vV") != str(local).lstrip("vV")
+        remote_text = str(remote or "").strip().lstrip("vV")
+        local_text = str(local or "").strip().lstrip("vV")
+        return bool(remote_text) and remote_text != local_text
+    width = max(len(left), len(right))
+    if len(left) < width:
+        left = left + (0,) * (width - len(left))
+    if len(right) < width:
+        right = right + (0,) * (width - len(right))
     return left > right
 
 

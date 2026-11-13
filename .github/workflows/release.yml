@@ -19,6 +19,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     env:
+      # A tag ref (including workflow_dispatch --ref vX.Y.Z) supplies the version.
+      # The version workflow dispatches this file because a GITHUB_TOKEN tag push does not.
       CHATBOX_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}
       MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
       MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -165,6 +167,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -182,6 +185,7 @@ jobs:
           # dist/ is only downloaded artifacts, so gh has no local git checkout.
           # --repo selects the repository, and --verify-tag uses the existing
           # remote tag instead of creating one from a local HEAD.
+          # --generate-notes lists merged pull request titles since the previous tag.
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"; then
             gh release upload "$GITHUB_REF_NAME" ./* \
               --clobber \
@@ -191,5 +195,5 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "$GITHUB_REF_NAME" \
-              --notes "Downloads for Linux, macOS and Windows. Checksums are in SHA256SUMS. See SIGNING.md for Gatekeeper and SmartScreen when the build is unsigned."
+              --generate-notes
           fi
