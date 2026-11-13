@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 import unittest
 
 import runtime
@@ -26,6 +27,26 @@ class DataDirTests(unittest.TestCase):
 
 
 class ToolLookupTests(unittest.TestCase):
+    def test_npm_shim_is_unwrapped(self):
+        folder = self._dir()
+        node = os.path.join(folder, "node.exe")
+        script = os.path.join(folder, "cli.js")
+        open(node, "w", encoding="utf-8").close()
+        open(script, "w", encoding="utf-8").close()
+        cmd = os.path.join(folder, "claude.cmd")
+        with open(cmd, "w", encoding="utf-8") as handle:
+            handle.write('@ECHO OFF\r\n"%~dp0\\node.exe" "%~dp0\\cli.js" %*\r\n')
+        self.assertEqual(runtime.unwrap_windows_shim(cmd), [os.path.normpath(node), os.path.normpath(script)])
+        prepared = runtime.prepare_argv([cmd, "-p", "line\n.chatbox-attach"], system="nt")
+        self.assertEqual(prepared[0], os.path.normpath(node))
+        self.assertIn("line\n.chatbox-attach", prepared)
+
+    def test_python_script_is_not_sent_through_cmd(self):
+        prepared = runtime.prepare_argv([r"C:\tools\claude.py", "-p", "hi\nthere"], system="nt")
+        self.assertEqual(prepared[0], sys.executable)
+        self.assertTrue(prepared[1].lower().endswith("claude.py"))
+        self.assertEqual(prepared[-1], "hi\nthere")
+
     def test_cmd_shim_is_found_in_a_folder(self):
         folder = self._dir()
         open(os.path.join(folder, "claude.cmd"), "w", encoding="utf-8").close()

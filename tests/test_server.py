@@ -17,11 +17,10 @@ def write_cli(folder, name, body):
     folder = Path(folder)
     script = textwrap.dedent(body)
     if os.name == "nt":
+        # A .py file is started by python.exe, so a multiline prompt is not cut by cmd.exe.
         py = folder / (name + ".py")
         py.write_text(script, encoding="utf-8")
-        cmd = folder / (name + ".cmd")
-        cmd.write_text(f'@"{sys.executable}" "{py}" %*\r\n', encoding="utf-8")
-        return str(cmd)
+        return str(py)
     path = folder / name
     path.write_text(script, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)

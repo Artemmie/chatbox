@@ -4,6 +4,7 @@ Linux and macOS keep the same directories and process groups as before.
 Windows uses %LOCALAPPDATA%\\Chatbox, .cmd/.exe shims, and taskkill for a process tree.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -91,12 +92,61 @@ def executable(path):
     return os.access(path, os.X_OK)
 
 
+_SHIM = re.compile(r'"%~dp0\\([^"\r\n]+)"\s+"%~dp0\\([^"\r\n]+)"')
+
+
+def _inside(parent, child):
+    parent = os.path.normcase(os.path.abspath(parent))
+    child = os.path.normcase(os.path.abspath(child))
+    return child == parent or child.startswith(parent + os.sep)
+
+
+def unwrap_windows_shim(path):
+    """An npm `.cmd` that only forwards to node. Returns [node, script], or None.
+
+    cmd.exe cannot pass a prompt that contains newlines, so the real program is started directly.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read(4000)
+    except OSError:
+        return None
+    match = _SHIM.search(text)
+    if not match:
+        return None
+    folder = os.path.dirname(os.path.abspath(path))
+    exe = os.path.normpath(os.path.join(folder, match.group(1)))
+    script = os.path.normpath(os.path.join(folder, match.group(2)))
+    if not (_inside(folder, exe) and _inside(folder, script)):
+        return None
+    if os.path.isfile(exe) and os.path.isfile(script):
+        return [exe, script]
+    return None
+
+
+def prepare_argv(argv, system=None):
+    """How to start this command. POSIX is unchanged. Windows avoids cmd.exe when it can."""
+    system = system or os.name
+    argv = list(argv)
+    if system != "nt" or not argv:
+        return argv
+    path = str(argv[0])
+    lower = path.lower()
+    if lower.endswith(".py"):
+        return [sys.executable, *argv]
+    if lower.endswith((".cmd", ".bat")):
+        unwrapped = unwrap_windows_shim(path)
+        if unwrapped:
+            return unwrapped + argv[1:]
+        return ["cmd.exe", "/c", *argv]
+    return argv
+
+
 def spawn(argv, system=None, **kwargs):
     """Start a child in its own process group. On Windows that is a new process group, not setsid."""
     system = system or os.name
+    argv = prepare_argv(argv, system)
     if system == "nt":
-        if argv and str(argv[0]).lower().endswith((".cmd", ".bat")):
-            argv = ["cmd.exe", "/c", *list(argv)]
         flags = int(kwargs.pop("creationflags", 0))
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         kwargs["creationflags"] = flags
