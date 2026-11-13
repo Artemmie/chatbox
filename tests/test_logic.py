@@ -115,6 +115,45 @@ class VaultTests(unittest.TestCase):
         self.assertTrue(rel.startswith("Chatbox/Chats/"))
         self.assertTrue(os.path.isfile(os.path.join(self.root, rel)))
 
+    def test_memories_keep_user_text_and_link_to_chatbox(self):
+        folder = os.path.join(self.root, "Chatbox")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "Memories.md"), "w", encoding="utf-8") as handle:
+            handle.write("# My memories\n\nI wrote this.\n\n- Old fact\n")
+        self.vault.write_memories([{"text": "Answer in Russian"}])
+        text = open(os.path.join(folder, "Memories.md"), encoding="utf-8").read()
+        self.assertIn("I wrote this.", text)
+        self.assertIn("Part of [[Chatbox]]", text)
+        self.assertIn("- Answer in Russian", text)
+        self.assertNotIn("Old fact", text)
+        self.assertEqual(self.vault.read_memories()[0]["text"], "Answer in Russian")
+        note = open(os.path.join(folder, "Chatbox.md"), encoding="utf-8").read()
+        self.assertIn("- [[Memories]]", note)
+        self.assertNotIn("I wrote this.", note)
+
+    def test_save_chat_links_the_graph_without_clobbering_notes(self):
+        folder = os.path.join(self.root, "Chatbox")
+        os.makedirs(folder)
+        note_path = os.path.join(folder, "Chatbox.md")
+        with open(note_path, "w", encoding="utf-8") as handle:
+            handle.write("# Project\n\nShelter placement notes.\n")
+        rel = self.vault.save_chat([{"role": "you", "text": "Plan the sensors", "who": "You"}], "Claude")
+        chat = open(os.path.join(self.root, rel), encoding="utf-8").read()
+        self.assertIn('up: "[[Chatbox]]"', chat)
+        self.assertTrue(chat.split("---", 2)[-1].lstrip().startswith("Part of [[Chatbox]]"))
+        self.assertIn("**You:**", chat)
+        text = open(note_path, encoding="utf-8").read()
+        self.assertIn("Shelter placement notes.", text)
+        self.assertIn("[[Memories]]", text)
+        self.assertIn("Plan the sensors", text)
+        self.assertLess(text.index("Shelter placement notes."), text.index("chatbox:index"))
+        rel2 = self.vault.save_chat([{"role": "you", "text": "Second pass"}], "Claude")
+        text = open(note_path, encoding="utf-8").read()
+        self.assertEqual(text.count("%% chatbox:index %%"), 1)
+        self.assertIn("Plan the sensors", text)
+        self.assertIn(os.path.splitext(os.path.basename(rel2))[0], text)
+        self.assertIn("Shelter placement notes.", text)
+
 
 class HistoryTests(unittest.TestCase):
     def test_save_load_delete_and_bad_id(self):
