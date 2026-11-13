@@ -140,12 +140,12 @@ class SyncBehaviorTests(unittest.TestCase):
 
     def test_secrets_never_land_in_the_sync_folder(self):
         os.makedirs(os.path.join(self.data, "chatgpt"), exist_ok=True)
-        token = "sk-live-SECRET-TOKEN-VALUE"
+        token = "fixture-sync-token-value"
         with open(os.path.join(self.data, "chatgpt", "account.json"), "w", encoding="utf-8") as handle:
-            json.dump({"access_token": token, "refresh_token": "refresh-SECRET"}, handle)
+            json.dump({"access_token": token, "refresh_token": "fixture-refresh-value"}, handle)
         chat = {"id": "eee555eee555", "title": "Notes", "backend": "chatgpt",
-                "access_token": token, "refresh_token": "refresh-SECRET",
-                "sessions": {"chatgpt": "sess", "refresh_token": "refresh-SECRET"},
+                "access_token": token, "refresh_token": "fixture-refresh-value",
+                "sessions": {"chatgpt": "sess", "refresh_token": "fixture-refresh-value"},
                 "items": [{"r": "you", "t": "hello", "files": [
                     {"name": "a.txt", "kind": "text", "data": token}]}]}
         sync.save_chat(self.root, chat)
@@ -158,7 +158,7 @@ class SyncBehaviorTests(unittest.TestCase):
                     blob.append(handle.read())
         text = "\n".join(blob)
         self.assertNotIn(token, text)
-        self.assertNotIn("refresh-SECRET", text)
+        self.assertNotIn("fixture-refresh-value", text)
         self.assertNotIn("access_token", text)
 
     def test_move_copies_and_keeps_originals(self):

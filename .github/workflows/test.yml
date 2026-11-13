@@ -35,6 +35,9 @@ jobs:
           test -f "$D/ui/js/app.js"
           test -f "$D/chatgpt.py"
           test -f "$D/attachments.py"
+          test -f "$D/update.py"
+          test -f "$D/install.json"
+          python3 -c 'import json,os,sys; d=json.load(open(os.path.join(sys.argv[1],"install.json"))); assert d["mode"]=="browser" and d["source"]' "$D"
           APP=""
           if [ -d /Applications/Chatbox.app ]; then APP=/Applications/Chatbox.app; fi
           if [ -d "$HOME/Applications/Chatbox.app" ]; then APP="$HOME/Applications/Chatbox.app"; fi

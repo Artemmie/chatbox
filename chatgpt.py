@@ -33,6 +33,15 @@ ISSUER = "https://auth.openai.com"
 RESOURCE = "https://api.openai.com/v1"
 SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
 PLAN_SCOPE = "chatgpt.tokens.use.direct"
+# Shown when consent, the granted scopes, or Responses say this plan cannot be shared with apps.
+PLAN_BLOCKED_MESSAGE = (
+    "Your ChatGPT plan or workspace doesn't allow apps to use it yet. "
+    "Try signing in with a different workspace, or use Codex, which runs on your ChatGPT subscription."
+)
+SIGNIN_TIMEOUT_MESSAGE = (
+    "You closed the sign-in window, or it timed out. Nothing was changed. "
+    "Click Continue with ChatGPT when you want to try again."
+)
 CALLBACK_PATH = "/auth/callback"
 AGENT_NAME = "Chatbox"
 LOGIN_LIMIT = 10 * 60
@@ -202,9 +211,29 @@ class AccountStore:
 
     def logged_in(self):
         acc = self.active()
-        if not acc or PLAN_SCOPE not in (acc.get("scopes") or []):
+        if not acc or acc.get("plan_usage") == "disabled" or PLAN_SCOPE not in (acc.get("scopes") or []):
             return False
         return bool(acc.get("refresh_token") or (acc.get("access_token") and acc.get("expires_at", 0) > time.time()))
+
+    def plan_blocked(self):
+        with self.lock:
+            data = self.load()
+        if data.get("plan_usage") == "disabled":
+            return True
+        acc = data["accounts"].get(data.get("active") or "")
+        return isinstance(acc, dict) and acc.get("plan_usage") == "disabled"
+
+    def set_plan_usage(self, enabled, client_id=None):
+        """Remember whether this computer may spend the ChatGPT plan. Does not start OAuth."""
+        value = "enabled" if enabled else "disabled"
+        with self.lock:
+            data = self.load()
+            data["plan_usage"] = value
+            cid = client_id or data.get("active") or ""
+            acc = data["accounts"].get(cid)
+            if isinstance(acc, dict):
+                acc["plan_usage"] = value
+            self.save(data)
 
     def put_account(self, account, active=True):
         with self.lock:
@@ -327,6 +356,8 @@ def oauth_error_fields(exc):
 
 
 def friendly_api_error(code, message):
+    if code == "subscription_sharing_user_not_eligible":
+        return PLAN_BLOCKED_MESSAGE
     if code == "subscription_sharing_usage_limit_exceeded":
         return ("ChatGPT plan limit reached for now. Usage is shared with other apps on this plan. "
                 "Check ChatGPT settings, then try again later.")
@@ -336,6 +367,28 @@ def friendly_api_error(code, message):
     return message or code or "ChatGPT could not answer."
 
 
+def classify_error(raw):
+    """(machine code, message) from a Responses or admission body. Code may be empty."""
+    try:
+        data = json.loads(raw or "")
+    except ValueError:
+        return "", "ChatGPT could not answer."
+    if not isinstance(data, dict):
+        return "", "ChatGPT could not answer."
+    err = data.get("error")
+    if isinstance(err, dict):
+        code = err.get("code") or ""
+        if not isinstance(code, str):
+            code = ""
+        return code, friendly_api_error(code, err.get("message") or "")
+    if isinstance(err, str) and err:
+        return "", friendly_api_error("", err)
+    detail = data.get("detail")
+    if isinstance(detail, str) and detail:
+        return "", detail[:300]
+    return "", "ChatGPT could not answer."
+
+
 class ResponsesParser:
     """SSE events from POST /v1/responses. Success requires response.completed."""
 
@@ -343,6 +396,7 @@ class ResponsesParser:
         self.buf = ""
         self.completed = False
         self.error = None
+        self.code = ""
         self.usage = {}
 
     def feed(self, event_name, data):
@@ -372,7 +426,8 @@ class ResponsesParser:
         elif kind in ("response.failed", "error"):
             err = ev.get("error") or (ev.get("response") or {}).get("error") or {}
             if isinstance(err, dict):
-                self.error = friendly_api_error(err.get("code") or "", err.get("message") or "")
+                self.code = err.get("code") or ""
+                self.error = friendly_api_error(self.code, err.get("message") or "")
             else:
                 self.error = friendly_api_error("", str(err))
         elif kind == "response.incomplete":
@@ -438,11 +493,14 @@ class Service:
     def status(self):
         acc = self.store.active()
         logged = self.store.logged_in()
-        email = (acc or {}).get("email") if acc else None
+        blocked = self.store.plan_blocked()
+        email = ((acc or {}).get("email") or "") if (logged or blocked) else ""
         job = self.job.view() if self.job else None
         return {"id": "chatgpt", "name": "ChatGPT",
                 "plan": "ChatGPT Plus or Pro, via Sign in with ChatGPT (no API key)",
-                "installed": True, "logged_in": logged, "account": email if logged else None,
+                "installed": True, "logged_in": logged, "account": email or None,
+                "plan_blocked": blocked,
+                "plan_message": PLAN_BLOCKED_MESSAGE if blocked else "",
                 "has_client": bool(acc and acc.get("client_id")),
                 "job": job}
 
@@ -496,7 +554,7 @@ class Service:
         existing = None if fresh else self.store.active()
         client_id = (existing or {}).get("client_id") or "dynamic_agent_client"
         outcome = self._authorize_once(job, client_id, existing)
-        if outcome.get("cancelled") or job.state == "cancelled":
+        if outcome.get("finished") or outcome.get("cancelled") or job.state != "running":
             return
         issued = outcome.get("issued")
         if outcome.get("invalid_grant") and issued and issued != "dynamic_agent_client":
@@ -506,7 +564,7 @@ class Service:
                         "You should not have to approve a new app.")
             job.output = job.last
             outcome = self._authorize_once(job, issued, self.store.active() or existing)
-            if outcome.get("cancelled") or job.state == "cancelled":
+            if outcome.get("finished") or outcome.get("cancelled") or job.state != "running":
                 return
         if outcome.get("tokens"):
             self._accept_tokens(job, outcome["tokens"], outcome["issued"], outcome["nonce"],
@@ -596,10 +654,12 @@ class Service:
             job.httpd = None
         if job.state == "cancelled":
             self._signin_log("authorize", client_kind=kind, detail="cancelled")
-            return {"cancelled": True}
+            return {"cancelled": True, "finished": True}
         if not captured:
-            self._signin_log("callback", client_kind=kind, detail="no_callback")
-            return {"message": "Sign-in was not finished. Try Continue with ChatGPT again."}
+            # The browser was closed, or the wait ended, with no callback. Do not start another one.
+            self._signin_log("callback", client_kind=kind, detail="timeout")
+            job.timeout(SIGNIN_TIMEOUT_MESSAGE)
+            return {"finished": True}
         if captured.get("state") != state:
             self._signin_log("callback", client_kind=kind, detail="state_mismatch")
             return {"message": "Sign-in could not be verified (the browser returned an unexpected response)."}
@@ -608,7 +668,16 @@ class Service:
             self._signin_log("callback", client_kind=kind,
                              error=err if err in ("access_denied", "invalid_request", "server_error") else "oauth_error")
             if err == "access_denied":
-                return {"message": "Sign-in was cancelled. ChatGPT plan use has to be allowed for Chatbox."}
+                # Consent was declined or the workspace blocked plan use. Keep the registration
+                # and stop. Do not open the browser again.
+                issued_id = captured.get("client_id") or ""
+                if issued_id and issued_id != "dynamic_agent_client":
+                    self.store.remember_client(issued_id)
+                    self.store.set_plan_usage(False, issued_id)
+                else:
+                    self.store.set_plan_usage(False)
+                job.blocked(PLAN_BLOCKED_MESSAGE)
+                return {"finished": True}
             return {"message": "Sign-in was not completed."}
         issued = captured.get("client_id") or (None if client_id == "dynamic_agent_client" else client_id)
         if client_id == "dynamic_agent_client":
@@ -662,12 +731,17 @@ class Service:
         if previous and previous.get("subject") and payload.get("sub") != previous.get("subject"):
             job.fail("That sign-in was for a different ChatGPT account. Use “Use a different account”.")
             return
+        record = _record(tokens, payload, client_id, scopes)
         if PLAN_SCOPE not in scopes:
-            # Keep the registration so a later approval can reuse the client id.
-            self.store.put_account(_record(tokens, payload, client_id, scopes), active=True)
-            job.fail("ChatGPT plan use was not allowed. Approve it for Chatbox in the browser, or in ChatGPT settings, then sign in again.")
+            # A valid sign-in without plan permission. Keep it, and do not start OAuth again.
+            record["plan_usage"] = "disabled"
+            self.store.put_account(record, active=True)
+            self.store.set_plan_usage(False, client_id)
+            job.blocked(PLAN_BLOCKED_MESSAGE)
             return
-        self.store.put_account(_record(tokens, payload, client_id, scopes), active=True)
+        record["plan_usage"] = "enabled"
+        self.store.put_account(record, active=True)
+        self.store.set_plan_usage(True, client_id)
         job.succeed("Signed in" + (f" as {payload.get('email')}" if payload.get("email") else "") + ".")
 
     def _logout(self):
@@ -698,8 +772,8 @@ class Service:
             acc = self.store.active()
             if not acc or not acc.get("access_token"):
                 raise RuntimeError("ChatGPT is not signed in. Open Accounts and choose Continue with ChatGPT.")
-            if PLAN_SCOPE not in (acc.get("scopes") or []):
-                raise RuntimeError("ChatGPT plan use was not allowed for Chatbox. Sign in again and approve it.")
+            if acc.get("plan_usage") == "disabled" or PLAN_SCOPE not in (acc.get("scopes") or []):
+                raise RuntimeError(PLAN_BLOCKED_MESSAGE)
             if acc.get("expires_at", 0) > time.time() + 60:
                 return acc["access_token"], acc
             if not acc.get("refresh_token"):
@@ -771,7 +845,11 @@ class Service:
             # One refresh was already attempted inside access_token. Ask the user to sign in again.
             return {"error": "ChatGPT session expired. Open Accounts and choose Continue with ChatGPT."}
         if status >= 400:
-            return {"error": _http_error_text(chunks)}
+            raw = "".join(chunks) if isinstance(chunks, list) else ""
+            code, text = classify_error(raw)
+            if code == "subscription_sharing_user_not_eligible":
+                self.store.set_plan_usage(False)
+            return {"error": text}
         parser = ResponsesParser()
         try:
             pending = ""
@@ -795,6 +873,9 @@ class Service:
             if turn is not None:
                 turn.resp = None
         result = parser.finish()
+        if parser.code == "subscription_sharing_user_not_eligible":
+            self.store.set_plan_usage(False)
+            return {"error": PLAN_BLOCKED_MESSAGE}
         if result.get("reply") is None:
             return result
         history[-1] = {"role": "user", "content": message if isinstance(message, str) else message}
@@ -897,14 +978,7 @@ def _open_stream(url, token, body, timeout, turn):
 
 def _http_error_text(chunks):
     raw = "".join(chunks) if not isinstance(chunks, list) else "".join(chunks)
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return "ChatGPT could not answer."
-    err = data.get("error") or {}
-    if isinstance(err, dict):
-        return friendly_api_error(err.get("code") or "", err.get("message") or "")
-    return friendly_api_error("", str(err))
+    return classify_error(raw)[1]
 
 
 class _Login:
@@ -923,6 +997,16 @@ class _Login:
 
     def fail(self, message):
         self.state = "failed"
+        self.last = message
+        self.output = message
+
+    def blocked(self, message):
+        self.state = "blocked"
+        self.last = message
+        self.output = message
+
+    def timeout(self, message):
+        self.state = "timeout"
         self.last = message
         self.output = message
 
@@ -975,7 +1059,10 @@ class _Callback(BaseHTTPRequestHandler):
                 self._page("You can close this tab and return to Chatbox.")
                 return
             self.server.result = qs
-        self._page("Signed in. You can close this tab and return to Chatbox.")
+        if qs.get("error"):
+            self._page("You can close this tab and return to Chatbox.")
+        else:
+            self._page("Signed in. You can close this tab and return to Chatbox.")
 
 
 # Filled in by chatbox once DATA_DIR is known.

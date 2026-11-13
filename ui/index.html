@@ -20,6 +20,11 @@
   </aside>
 
   <main id="main" class="is-empty">
+    <div id="updatebar" class="updatebar" hidden>
+      <span id="updatetext">Update available</span>
+      <button type="button" class="pillbtn" id="updatebtn">Update now</button>
+      <span class="muted" id="updatemsg"></span>
+    </div>
     <header class="top">
       <button class="icon" id="sideopen" title="Open sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
       <div class="title" id="title"></div>
@@ -57,7 +62,7 @@
   <div class="dlg-h"><h2>Working folder</h2><button class="icon" data-close title="Close">✕</button></div>
   <form class="dlg-b" id="folderform">
     <p class="intro">Cursor, Claude and Codex work in this folder. In Agent mode they can change files here; plans are saved to its <code>plans/</code> folder.</p>
-    <input class="field" id="folderinput" placeholder="/home/you/projects/my-app">
+    <input class="field" id="folderinput" placeholder="~/projects/my-app">
     <div class="row"><button class="btn">Use this folder</button><span class="muted">Changing it starts fresh conversations.</span></div>
   </form>
 </dialog>
@@ -119,6 +124,12 @@
       <div class="muted">What every assistant should know about you, or how it should reply.</div>
       <textarea class="field" id="instructions" rows="4" maxlength="4000" placeholder="e.g. Reply in Russian. Keep answers short. Explain code step by step."></textarea>
       <div class="row"><button class="btn" id="instsave">Save</button><span class="muted" id="instmsg"></span></div>
+    </section>
+    <section class="sec">
+      <div class="sec-h"><b>Updates</b></div>
+      <div class="muted">Chatbox looks for a new version when it starts and about every 6 hours. An update only fast-forwards your own clone, then runs install.sh again. Chats, accounts and settings stay put.</div>
+      <label class="chk"><input type="checkbox" id="auto_update" checked> Check for updates</label>
+      <label class="chk"><input type="checkbox" id="auto_install_updates"> Install updates automatically</label>
     </section>
     <p class="muted" style="margin:0">Tip: type <code>/remember</code> and some text in the message box to save a memory, or use “Remember” under any message.</p>
   </div>

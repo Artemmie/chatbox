@@ -457,6 +457,8 @@ function renderSettings(p){
   if(document.activeElement!==$('#sync_folder'))$('#sync_folder').value=p.settings.sync_folder||'Chatbox';
   $('#syncstatus').textContent=sync.active?('Syncing in '+sync.path):(sync.vault?'Sync is off. Chats stay on this computer.':'');
   if(document.activeElement!==$('#instructions'))$('#instructions').value=p.settings.instructions||'';
+  $('#auto_update').checked=p.settings.auto_update!==false;
+  $('#auto_install_updates').checked=!!p.settings.auto_install_updates;
   $('#mempath').textContent=p.memories.length+' saved · '+p.path;$('#memclear').disabled=!p.memories.length;
   $('#memlist').innerHTML=p.memories.length?p.memories.map(m=>'<div class="mem" data-id="'+m.id+'"><input class="field" value="'+esc(m.text)+'" maxlength="500"><span class="src">'+(m.source==='assistant'?'by assistant':m.source==='obsidian'?'in Obsidian':'by you')+(m.created?' · '+esc(m.created):'')+'</span><button class="icon" type="button" title="Delete">'+ICON.trash+'</button></div>').join('')
     :'<div class="muted">No memories yet.</div>';
@@ -464,7 +466,7 @@ function renderSettings(p){
 async function memAct(body){const r=await post(body.settings?'/api/settings':'/api/memory',body);if(r.error)alert(r.error);renderSettings(r);CHAT.ctx=fresh();return r;}
 function refreshMemCount(){fetch('/api/settings').then(r=>r.json()).then(p=>{$('#memcount').textContent=p.memories.length?p.memories.length+(p.memories.length===1?' memory':' memories'):'';if($('#set').open)renderSettings(p);});}
 $('#setbtn').onclick=async()=>{$('#set').showModal();renderSettings(await fetch('/api/settings').then(r=>r.json()));};
-for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','sync_chats'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
+for(const k of ['use_memory','auto_memory','memory_in_vault','vault_search','sync_chats','auto_update','auto_install_updates'])$('#'+k).onchange=e=>memAct({settings:{[k]:e.target.checked}});
 $('#syncform').onsubmit=async e=>{e.preventDefault();await memAct({settings:{sync_folder:$('#sync_folder').value}});};
 $('#syncmove').onclick=async()=>{
   if(!$('#sync_chats').checked){alert('Turn on sync first. The copies stay in the vault; the originals on this computer are not deleted.');return;}
@@ -536,10 +538,13 @@ function ollamaCard(a){
   return h;}
 function renderAccounts(list){
   $('#acclist').innerHTML=list.map(a=>{if(a.id==='ollama')return ollamaCard(a);
-    const st=!a.installed?['bad','Not installed']:a.logged_in?['ok','Connected'+(a.account?' · '+esc(a.account):'')]:['bad','Not signed in'];
+    const blocked=a.id==='chatgpt'&&a.plan_blocked;
+    const st=!a.installed?['bad','Not installed']:blocked?['bad','Plan not available'+(a.account?' · '+esc(a.account):'')]:a.logged_in?['ok','Connected'+(a.account?' · '+esc(a.account):'')]:['bad','Not signed in'];
     const busy=a.job&&a.job.state==='running';const dis=busy?' disabled':'';
     let btns='';
     if(!a.installed)btns='<button class="btn" data-act="install" data-s="'+a.id+'"'+dis+'>Install</button>';
+    else if(blocked)btns='<button class="btn" data-act="usecodex">Use Codex</button> <button class="ghost" data-act="login" data-s="chatgpt"'+dis+'>Sign in again</button>'
+      +(a.has_client?' <button class="ghost" data-act="login_new" data-s="chatgpt"'+dis+'>Use a different account</button>':'');
     else if(!a.logged_in)btns=(a.id==='chatgpt'
       ?'<button class="btn" data-act="login" data-s="chatgpt" data-oai-siwc-button'+dis+'>Continue with ChatGPT</button>'
         +(a.has_client?' <button class="ghost" data-act="login_new" data-s="chatgpt"'+dis+'>Use a different account</button>':'')
@@ -547,9 +552,10 @@ function renderAccounts(list){
       +(a.id==='codex'?' <button class="ghost" data-act="login_browser" data-s="codex"'+dis+' title="Older method: the browser sends you back to Codex on this computer">Sign in with browser redirect</button>':''));
     else btns='<button class="ghost" data-act="logout" data-s="'+a.id+'"'+dis+'>Sign out</button>';
     if(a.installed&&a.id==='codex'&&a.source)btns+=' <button class="ghost" data-act="install" data-s="codex"'+dis+' title="OpenAI’s standalone Codex is newer and supports more models">Install standalone Codex</button>';
+    let notice=blocked?'<div class="muted">'+esc(a.plan_message||'')+'</div>':'';
     let job='';
     if(a.job){const J=a.job,what={install:'Installing',login:'Signing in',logout:'Signing out'}[J.kind];
-      const state=J.state==='running'?what+'…':J.state==='done'?{install:'Installed',login:'Sign-in finished',logout:'Signed out'}[J.kind]+' ✓':J.state==='cancelled'?'Cancelled':'Something went wrong';
+      const state=J.state==='running'?what+'…':J.state==='done'?{install:'Installed',login:'Sign-in finished',logout:'Signed out'}[J.kind]+' ✓':J.state==='cancelled'?'Cancelled':J.state==='blocked'?'ChatGPT plan usage is off':J.state==='timeout'?'Sign-in closed':'Something went wrong';
       job='<div class="job"><b>'+state+'</b>';
       if(J.state==='running'&&J.kind==='login'&&J.user_code){ // Codex device code
         job+='<div class="muted">1. A sign-in page should open in your browser. Sign in to your ChatGPT account.</div>'
@@ -560,15 +566,16 @@ function renderAccounts(list){
       else if(J.state==='running'&&J.kind==='login'){
         job+='<div class="muted">Your browser should open. Sign in there'+(a.id==='claude'?', then copy the code it shows and paste it below.':' and this finishes by itself.')+'</div>';
         if(J.url)job+='<div class="row"><button class="ghost" data-act="open" data-url="'+esc(J.url)+'">Open sign-in page</button></div>';
-        if(a.id==='codex')job+='<div class="muted">Keep the ChatGPT app closed while signing in: it can cancel this sign-in.</div>';}
-      if(J.last&&J.state!=='cancelled'&&!/^(Opening browser|If the browser)/.test(J.last))job+='<div class="muted">'+esc(J.last)+'</div>';
+        if(a.id==='codex')job+='<div class="muted">Keep the ChatGPT app closed while signing in: it can cancel this sign-in.</div>';
+        if(a.id==='chatgpt')job+='<div class="muted">If you close the browser, click Cancel. Chatbox will not keep asking.</div>';}
+      if(J.last&&J.state!=='cancelled'&&J.state!=='blocked'&&!/^(Opening browser|If the browser)/.test(J.last))job+='<div class="muted">'+esc(J.last)+'</div>';
       if(J.asks_code)job+='<div class="row"><input class="field" id="code_'+a.id+'" placeholder="Paste the code from the browser" value="'+esc(codes[a.id]||'')+'"><button class="btn" data-act="input" data-s="'+a.id+'">Submit code</button></div>';
       if(J.output)job+='<details'+(J.state==='failed'?' open':'')+'><summary class="muted">Details</summary><pre>'+esc(J.output)+'</pre></details>';
       job+='<div class="row">'+(J.state==='running'?'<button class="ghost" data-act="cancel" data-s="'+a.id+'">Cancel</button>':'<button class="ghost" data-act="dismiss" data-s="'+a.id+'">OK</button>')+'</div></div>';}
     const dots='<span class="bdot" style="background:'+color(a.id==='codex'?'codex':a.id)+'"></span>';
     return '<div class="sec"><div class="sec-h">'+dots+'<b>'+esc(a.name)+'</b><span class="pill '+st[0]+'">'+st[1]+'</span></div>'
       +'<div class="muted">Needs: '+esc(a.plan)+(a.source?' · Codex '+esc(a.source):'')+'</div>'
-      +'<div class="row">'+btns+'</div>'+job+'</div>';}).join('');}
+      +notice+'<div class="row">'+btns+'</div>'+job+'</div>';}).join('');}
 $('#acclist').addEventListener('input',e=>{if(e.target.id==='ollamaurl')ollamaTyped=e.target.value;if(e.target.id&&e.target.id.startsWith('code_'))codes[e.target.id.slice(5)]=e.target.value;});
 $('#acclist').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id&&e.target.id.startsWith('code_')){e.preventDefault();e.target.nextElementSibling.click();}});
 function ollamaRefresh(){delete modelCache.ollama;if(S.backend==='ollama')loadModels();accJSON='';return refreshAccounts(true);}
@@ -577,6 +584,8 @@ $('#acclist').addEventListener('submit',async e=>{if(e.target.id!=='ollamaform')
   ollamaTyped=null;ollamaRefresh();});
 $('#acclist').addEventListener('click',async e=>{
   const t=e.target.closest('[data-act]');if(!t)return;const act=t.dataset.act,s=t.dataset.s,name=ACC[s]&&ACC[s].name;
+  if(act==='usecodex'){S.backend='codex';store.set('backend','codex');if($('#acc').open)$('#acc').close();paint();
+    if(!ready('codex'))note('Codex is not signed in on this computer yet. Open Accounts and sign in. Codex uses your ChatGPT subscription.');return;}
   if(act==='open'){post('/api/open',{url:t.dataset.url});return;}
   if(act==='copycode'){copy(t.dataset.code,t);return;}
   if(act==='ollamacheck'){t.disabled=true;ollamaRefresh();return;}
@@ -588,6 +597,28 @@ $('#acclist').addEventListener('click',async e=>{
   if(act==='dismiss'){for(const k in modelCache)delete modelCache[k];loadModels();}
   accJSON='';refreshAccounts(act==='dismiss');});
 function openAccounts(){if(!$('#acc').open)$('#acc').showModal();accJSON='';refreshAccounts(true);fetch('/api/settings').then(r=>r.json()).then(renderObsidian);}
+async function refreshUpdate(){
+  let u;try{u=await fetch('/api/update').then(r=>r.json());}catch(e){return;}
+  const bar=$('#updatebar');if(!bar)return;
+  if(!u.available){bar.hidden=true;if(u.checking)setTimeout(refreshUpdate,3000);return;}
+  bar.hidden=false;
+  $('#updatetext').textContent='Update available';
+  const btn=$('#updatebtn');
+  btn.hidden=false;
+  btn.textContent=u.can_apply?'Update now':(u.url?'View release':'Update now');
+  $('#updatemsg').textContent=u.message||'';
+  if(u.checking)setTimeout(refreshUpdate,3000);
+}
+$('#updatebtn').onclick=async()=>{
+  const cur=await fetch('/api/update').then(r=>r.json()).catch(()=>null);
+  if(cur&&cur.url&&!cur.can_apply){post('/api/open',{url:cur.url});return;}
+  $('#updatebtn').disabled=true;$('#updatemsg').textContent='Updating…';
+  const r=await post('/api/update',{action:'apply'});
+  if(r.error){$('#updatemsg').textContent=r.error;$('#updatebtn').disabled=false;return;}
+  $('#updatemsg').textContent=r.restarting?'Updated. Restarting…':(r.error||'');
+};
+refreshUpdate();
+setInterval(refreshUpdate,60000);
 $('#accbtn').onclick=openAccounts;
 $('#acc').addEventListener('close',()=>{clearTimeout(accTimer);refreshAccounts(true);});
 

@@ -25,6 +25,8 @@ DEFAULTS = {
     "ollama_url": "http://localhost:11434",  # where the Ollama server runs
     "sync_chats": False,    # keep chats and memories in the Obsidian vault
     "sync_folder": "Chatbox",  # folder inside the vault, shared by Obsidian Sync
+    "auto_update": True,    # look for a new version on startup and every few hours
+    "auto_install_updates": False,  # fast-forward and reinstall without asking
 }
 REMEMBER = re.compile(r"^[ \t>*_-]*REMEMBER:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -115,7 +117,8 @@ class Store:
         with self.lock:
             s = self.settings()
             for k, v in (new or {}).items():
-                if k in ("use_memory", "auto_memory", "memory_in_vault", "vault_search", "sync_chats"):
+                if k in ("use_memory", "auto_memory", "memory_in_vault", "vault_search", "sync_chats",
+                        "auto_update", "auto_install_updates"):
                     s[k] = bool(v)
                 elif k == "vault_path":
                     s[k] = str(v)

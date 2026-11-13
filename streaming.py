@@ -90,6 +90,11 @@ def active(tid):
         return tid in _turns
 
 
+def any_active():
+    with _lock:
+        return bool(_turns)
+
+
 def _kill_proc(proc):
     try:
         os.killpg(proc.pid, signal.SIGTERM)

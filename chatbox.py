@@ -27,6 +27,7 @@ import memory
 import ollama
 import streaming
 import sync as syncmod
+import update as updatemod
 import usage as usagemod
 import vault as vaultmod
 
@@ -35,6 +36,8 @@ TIMEOUT = streaming.TOTAL_TIMEOUT  # seconds per reply; override with CHATBOX_TI
 
 
 DATA_DIR = os.environ.get("CHATBOX_DATA", os.path.join(HOME, ".local/share/chatbox"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+CURRENT_PORT = None
 chatgpt.init(DATA_DIR, accounts.open_url)
 
 # Apps opened from the macOS Finder (or some Linux menus) get a short PATH, so add the
@@ -673,6 +676,30 @@ def status():
             "codex": bool(find("codex")), "chatgpt": bool(find("codex")), "home": HOME}
 
 
+def _updates_busy():
+    if streaming.any_active():
+        return True
+    service = chatgpt.SERVICE
+    job = getattr(service, "job", None) if service else None
+    if job is not None and job.state == "running":
+        return True
+    return any(item.state == "running" for item in ACCOUNTS.jobs.values())
+
+
+def start_updates():
+    """Check for a newer Chatbox in the background. Off unless Settings says so."""
+    def settings():
+        try:
+            return MEMORY.settings()
+        except Exception:
+            return {"auto_update": True, "auto_install_updates": False}
+
+    def port():
+        return CURRENT_PORT
+
+    updatemod.start(DATA_DIR, HERE, settings, _updates_busy, port)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -753,6 +780,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/accounts"):
             return self._send(200, json.dumps(ACCOUNTS.status(fresh="fresh=1" in self.path)
                                               + [chatgpt.status(), ollama.status(ollama_url())]))
+        if self.path == "/api/update":
+            return self._send(200, json.dumps(updatemod.snapshot()))
         self._send(404, '{"error":"not found"}')
 
     def do_POST(self):
@@ -850,6 +879,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"error": str(e)}))
         if self.path == "/api/cancel":
             return self._send(200, json.dumps({"ok": streaming.cancel(str(req.get("turn_id") or ""))}))
+        if self.path == "/api/update":
+            action = req.get("action") or "check"
+            if action == "apply":
+                return self._send(200, json.dumps(updatemod.request_apply()))
+            if action == "check":
+                return self._send(200, json.dumps(updatemod.consider(auto=False)))
+            return self._send(200, json.dumps({"error": "Unknown action"}))
         if self.path == "/api/open":
             try:
                 accounts.open_url(req.get("url", ""))
@@ -893,8 +929,11 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
+    global CURRENT_PORT
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    url = f"http://127.0.0.1:{args.port}/"
+    CURRENT_PORT = srv.server_address[1]
+    start_updates()
+    url = f"http://127.0.0.1:{CURRENT_PORT}/"
     print(f"Chatbox running at {url}  (Ctrl+C to stop)")
     if not args.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()

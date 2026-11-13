@@ -83,6 +83,15 @@ $RUN >>"\$D/chatbox.log" 2>&1
 EOF
 chmod +x "$D/run.sh"
 
+# Remember this clone, the mode, and a distrobox name so a later update can
+# fast-forward the same folder and run install.sh the same way. No tokens.
+python3 - "$D" "$SRC" "$MODE" "$BOX" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import update
+update.write_install(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "")
+PY
+
 if [ "$OS" = Darwin ]; then
   # macOS: a small Chatbox.app that starts run.sh. /Applications is what Finder and
   # Launchpad show; admin users can write there without sudo.

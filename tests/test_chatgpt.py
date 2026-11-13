@@ -97,6 +97,12 @@ class TokenTests(unittest.TestCase):
             "type": "response.failed",
             "response": {"error": {"code": "subscription_sharing_usage_limit_exceeded", "message": "no"}}}))
         self.assertIn("limit", failed.finish()["error"].lower())
+        blocked = chatgpt.ResponsesParser()
+        blocked.feed("response.failed", json.dumps({
+            "type": "response.failed",
+            "response": {"error": {"code": "subscription_sharing_user_not_eligible", "message": "no"}}}))
+        self.assertEqual(blocked.code, "subscription_sharing_user_not_eligible")
+        self.assertIn("doesn't allow apps", blocked.finish()["error"])
 
         box, tmp = isolate()
         seen = {}
@@ -193,7 +199,7 @@ class SignInRecoveryTests(unittest.TestCase):
         urls = []
         exchanges = []
         secret_code = "abc+def"
-        secret_token = "ACCESS-SECRET-VALUE"
+        secret_token = "fixture-access-value"
 
         def open_url(url):
             urls.append(url)
@@ -212,7 +218,7 @@ class SignInRecoveryTests(unittest.TestCase):
             code = form["code"][0]
             if code in fail_codes:
                 raise chatgpt.HTTPStatus(400, {"error": "invalid_grant", "error_description": "expired"})
-            return {"access_token": secret_token, "refresh_token": "REFRESH-SECRET", "id_token": "header.payload.sig",
+            return {"access_token": secret_token, "refresh_token": "fixture-refresh-value", "id_token": "header.payload.sig",
                     "expires_in": 3600,
                     "scope": "openid profile email offline_access resource.invoke " + chatgpt.PLAN_SCOPE}
 
@@ -292,6 +298,125 @@ class SignInRecoveryTests(unittest.TestCase):
         self.assertNotIn("should-not-appear", line)
         self.assertIn("client_kind=issued", line)
         self.assertIn("error=invalid_grant", line)
+
+
+class PlanUsageTests(unittest.TestCase):
+    """Consent, missing plan scope, and an ineligible workspace stop OAuth. They do not loop."""
+
+    def _service(self, open_url, scope):
+        folder = tempfile.mkdtemp()
+        issued = "oaiapp_kept"
+
+        def fake_json(method, url, headers, body, timeout):
+            return {"access_token": "fixture-access-value", "refresh_token": "fixture-refresh-value",
+                    "id_token": "header.payload.sig", "expires_in": 3600, "scope": scope}
+
+        original = (chatgpt._json_request, chatgpt.verify_id_token, chatgpt.load_discovery)
+        chatgpt._json_request = fake_json
+        chatgpt.verify_id_token = lambda token, jwks, audience, nonce, now=None: {
+            "sub": "user-1", "email": "a@b.c", "iss": chatgpt.ISSUER}
+        chatgpt.load_discovery = lambda: None
+        self.addCleanup(setattr, chatgpt, "_json_request", original[0])
+        self.addCleanup(setattr, chatgpt, "verify_id_token", original[1])
+        self.addCleanup(setattr, chatgpt, "load_discovery", original[2])
+        service = chatgpt.Service(folder, open_url)
+        service._jwks = lambda force=False: {"keys": []}
+        return service, issued
+
+    def _callback(self, url, **fields):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        redirect = query["redirect_uri"][0]
+        fields.setdefault("state", query["state"][0])
+        urllib.request.urlopen(redirect + "?" + urllib.parse.urlencode(fields), timeout=5).read()
+
+    def test_access_denied_marks_plan_disabled_and_does_not_retry(self):
+        urls = []
+
+        def open_url(url):
+            urls.append(url)
+            self._callback(url, error="access_denied", client_id="oaiapp_kept")
+
+        service, issued = self._service(open_url, chatgpt.PLAN_SCOPE)
+        job = chatgpt._Login()
+        service._login_flow(job, fresh=True)
+        self.assertEqual(job.state, "blocked", job.last)
+        self.assertEqual(len(urls), 1)
+        self.assertIn("doesn't allow apps", job.last)
+        self.assertIn("Codex", job.last)
+        self.assertTrue(service.store.plan_blocked())
+        self.assertFalse(service.logged_in())
+        self.assertEqual(service.store.active()["client_id"], issued)
+        self.assertEqual(service.status()["plan_message"], chatgpt.PLAN_BLOCKED_MESSAGE)
+
+    def test_missing_plan_scope_keeps_sign_in_and_does_not_retry(self):
+        urls = []
+
+        def open_url(url):
+            urls.append(url)
+            self._callback(url, code="one-code", client_id="oaiapp_kept")
+
+        scope = "openid profile email offline_access resource.invoke"
+        service, issued = self._service(open_url, scope)
+        job = chatgpt._Login()
+        service._login_flow(job, fresh=True)
+        self.assertEqual(job.state, "blocked", job.last)
+        self.assertEqual(len(urls), 1)
+        self.assertIn("doesn't allow apps", job.last)
+        acc = service.store.active()
+        self.assertEqual(acc["email"], "a@b.c")
+        self.assertEqual(acc["client_id"], issued)
+        self.assertNotIn(chatgpt.PLAN_SCOPE, acc["scopes"])
+        self.assertEqual(acc["plan_usage"], "disabled")
+        self.assertFalse(service.logged_in())
+        self.assertTrue(service.status()["plan_blocked"])
+
+    def test_ineligible_response_disables_plan_and_is_not_retried(self):
+        folder = tempfile.mkdtemp()
+        service = chatgpt.Service(folder, lambda url: None)
+        service.store.put_account({
+            "email": "a@b.c", "subject": "user-1", "client_id": "oaiapp_test",
+            "access_token": "fixture-access-value", "refresh_token": "fixture-refresh-value",
+            "expires_at": time.time() + 3600, "plan_usage": "enabled",
+            "scopes": chatgpt.SCOPES.split(),
+        }, active=True)
+        calls = []
+        body = json.dumps({"error": {"code": "subscription_sharing_user_not_eligible", "message": "no"}})
+
+        def fake_open(url, token, payload, timeout, turn):
+            calls.append(url)
+            return 403, [body]
+
+        original = chatgpt._open_stream
+        chatgpt._open_stream = fake_open
+        self.addCleanup(setattr, chatgpt, "_open_stream", original)
+        def run(message):
+            gen = service.stream_turn(message, None, "m", None, 30)
+            try:
+                while True:
+                    next(gen)
+            except StopIteration as stop:
+                return stop.value
+
+        first = run("Hi")
+        self.assertEqual(first["error"], chatgpt.PLAN_BLOCKED_MESSAGE)
+        self.assertEqual(service.store.active()["plan_usage"], "disabled")
+        second = run("Hi again")
+        self.assertEqual(second["error"], chatgpt.PLAN_BLOCKED_MESSAGE)
+        self.assertEqual(len(calls), 1)
+
+    def test_closed_browser_times_out_without_disabling_plan(self):
+        original = chatgpt.LOGIN_LIMIT
+        chatgpt.LOGIN_LIMIT = 0
+        self.addCleanup(setattr, chatgpt, "LOGIN_LIMIT", original)
+        urls = []
+        service, _issued = self._service(lambda url: urls.append(url), chatgpt.PLAN_SCOPE)
+        job = chatgpt._Login()
+        service._login_flow(job, fresh=True)
+        self.assertEqual(job.state, "timeout", job.last)
+        self.assertIn("closed the sign-in window", job.last)
+        self.assertEqual(len(urls), 1)
+        self.assertFalse(service.store.plan_blocked())
+        self.assertNotIn("doesn't allow apps", job.last)
 
 
 if __name__ == "__main__":

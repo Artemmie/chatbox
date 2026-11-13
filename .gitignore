@@ -25,6 +25,9 @@ auth.json
 .credentials.json
 credentials*
 
+# Written by install.sh so the installed copy knows its clone. Not part of the source.
+install.json
+
 # Personal memories and settings (if CHATBOX_DATA points here)
 memories.json
 settings.json

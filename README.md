@@ -38,8 +38,9 @@ Usage counts toward each service's plan, exactly as if you used its own app. Rep
 - **Usage** – messages, tokens, reply time and (for Claude) cost per assistant and model, with a daily chart and a 7 / 30 day / all-time view. Each reply also shows its tokens, time and cost. Subscription limits aren't visible to the command-line tools, so they aren't shown.
 - **Accounts screen** – see what's connected and **Install / Sign in / Sign out** each service without a terminal. Sign-in happens in your browser; Chatbox never sees your password.
 - **Local models (Ollama)** – every model you've pulled or built with Ollama (`ollama pull qwen3:8b`, or your own from a Modelfile) shows up in the Model menu. *Auto* uses the one you downloaded or changed most recently. Ask and Plan, no Agent mode. Ollama doesn't remember conversations, so Chatbox keeps each one in `~/.local/share/chatbox/ollama/` and sends the history with every message. Text files are pasted into the message; images are sent only when the model reports vision. The server address (default `http://localhost:11434`, or another computer on your network) is set in Accounts → Ollama.
-- **ChatGPT, separate from Codex** – Accounts → **Continue with ChatGPT** is OpenAI's sign-in for open-source apps on this computer. It uses your ChatGPT Plus or Pro plan (no API key) and chats through the public Responses API, with nothing stored on OpenAI's side (`store: false`). It is a plain chat: Ask and Plan, not Agent. Codex remains the coding agent and has its own sign-in. There is no official ChatGPT app you can drive as a general chat CLI without an API key; this sign-in is the supported way to use the plan itself. Chatbox does not scrape the ChatGPT website or reuse browser cookies. The first approval sometimes returns a one-time code OpenAI will not exchange; Chatbox keeps that registration and opens the browser once more so you only confirm the account. Failures are written to `chatbox.log` without codes or tokens.
+- **ChatGPT, separate from Codex** – Accounts → **Continue with ChatGPT** is OpenAI's sign-in for open-source apps on this computer. It uses your ChatGPT Plus or Pro plan (no API key) and chats through the public Responses API, with nothing stored on OpenAI's side (`store: false`). It is a plain chat: Ask and Plan, not Agent. Codex remains the coding agent and has its own sign-in. There is no official ChatGPT app you can drive as a general chat CLI without an API key; this sign-in is the supported way to use the plan itself. Chatbox does not scrape the ChatGPT website or reuse browser cookies. The first approval sometimes returns a one-time code OpenAI will not exchange; Chatbox keeps that registration and opens the browser once more so you only confirm the account. If the consent page says a required permission is unavailable, or ChatGPT says this workspace cannot share its plan, Chatbox stops instead of asking again. Accounts then shows that plan use is off, with **Use Codex** and **Sign in again**. Closing the browser ends the attempt and changes nothing. Failures are written to `chatbox.log` without codes or tokens.
 - **Desktop app** – its own window and icon: a menu entry on Linux, `Chatbox.app` on macOS.
+- **Updates** – on startup, and about every 6 hours, Chatbox checks for a new version. A git install is compared with that clone's tracked branch (`git fetch`, fast-forward only). Any other install is compared with the public GitHub tags. **Update now** pulls only when that is a straight fast-forward, runs `install.sh` again in the same mode, and restarts. Chats, accounts and settings are not touched. Turn checks off, or turn on automatic install, in Settings. If the clone has local edits, or the histories have diverged, Chatbox stops and says so.
 
 ## Requirements
 
@@ -95,6 +96,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 - With Obsidian connected, notes that match your message are sent to the assistant you are chatting with (turn off in **Settings**). Chatbox only writes inside `Chatbox/` in your vault, plus `plans/` in the project folder you choose.
 - Usage statistics are stored locally in `~/.local/share/chatbox/usage.jsonl` (no message text, only counts). Clear them in **Usage**.
 - Chats are saved locally in `~/.local/share/chatbox/chats/` (one JSON file each), unless Sync is on, in which case the shared copy is Markdown in your vault. Delete them from the sidebar.
+- An update talks only to the git remote you already cloned from, or, when there is no clone, to GitHub's public tag list. It does not send chats, memories or sign-in tokens. It will not download and run a release archive.
 - Memories and custom instructions are stored locally in `~/.local/share/chatbox/memories.json` and `settings.json`. With Sync on, memories are also kept in the vault's `Memories.md`. Custom instructions stay on this computer. They are sent only to the assistant you are chatting with, at the start of a chat (or when they change). Turn this off in **Settings**.
 
 ## Files
@@ -112,6 +114,7 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 | `ollama.py` | Ollama: model list, status, and chats with locally saved history |
 | `vault.py` | Obsidian vault: detection, memory note, note search, saving chats |
 | `sync.py` | Optional vault sync: Markdown chats and memories, conflict-safe |
+| `update.py` | Optional updates: fast-forward the clone you installed from, then re-run `install.sh` |
 | `app.py` | Desktop window (PyQt6 WebEngine) |
 | `tests/` | `python3 -m unittest discover -s tests` (stdlib only; CLIs are mocked) |
 | `install.sh` / `uninstall.sh` | Per-user install, no root needed |
@@ -134,6 +137,17 @@ Use this when the same Obsidian vault is already synced between the machines (Ob
 4. Wait for the vault to finish syncing, then open Chatbox on the other computer with the same setting. The sidebar picks up new and updated notes within a few seconds. You do not need to restart it.
 
 Sign-ins are not in that folder. Install and sign in to Cursor, Claude, Codex and ChatGPT on each computer. Attached file bytes stay on the computer where you attached them; the note only records the file name.
+
+## Updates
+
+`install.sh` records the clone path, the mode (`window` or `browser`) and any distrobox name in `~/.local/share/chatbox/install.json`. Chatbox uses that to update the same way on macOS (`Chatbox.app`) and Linux (including a distrobox menu entry).
+
+Settings → Updates:
+
+- **Check for updates** is on. Turn it off to stop the startup and 6-hour checks.
+- **Install updates automatically** is off. Turn it on to fast-forward and restart when a clean update is waiting and no reply is running.
+
+**Update now** refuses to continue when the clone has uncommitted changes, and it refuses a merge that is not a fast-forward. Nothing in `~/.local/share/chatbox` besides the program files is removed: chats, `settings.json` and `chatgpt/account.json` stay.
 
 ## License
 

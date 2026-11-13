@@ -56,6 +56,8 @@ def start_server():
 
 def main():
     srv = start_server()
+    chatbox.CURRENT_PORT = srv.server_address[1]
+    chatbox.start_updates()
     app = QApplication(sys.argv)
     app.setApplicationName("Chatbox")
     app.setDesktopFileName("chatbox")  # links the window to its menu entry and icon
