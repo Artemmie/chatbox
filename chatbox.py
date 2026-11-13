@@ -467,6 +467,8 @@ def _prepare_message(req):
     notes = []
     v = MEMORY.vault()
     if v and MEMORY.settings()["use_memory"] and MEMORY.settings()["vault_search"]:
+        if req.get("backend") in ("claude", "codex", "cursor"):
+            context += "[Obsidian] " + v.search_hint() + "\n\n"
         notes = v.search(req.get("message", ""), exclude=set(req.get("sent_notes") or []))
         if notes:
             context += ("[Notes from the user's Obsidian vault (their long-term memory) that may "
