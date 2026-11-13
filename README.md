@@ -37,7 +37,7 @@ Shared memories in Settings, including the option to keep them in Obsidian.
 
 ## Download
 
-The latest builds are on the [releases page](https://github.com/Artemmie/chatbox/releases/latest). A tag `v*` builds them. Until the first tag is published, those links 404.
+The latest builds are on the [releases page](https://github.com/Artemmie/chatbox/releases/latest).
 
 | System | Download |
 |---|---|
