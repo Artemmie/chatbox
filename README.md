@@ -1,8 +1,39 @@
 # Chatbox
 
-One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux, macOS and Windows — using the subscriptions you already pay for. No API keys. Plus your own local models through **Ollama**.
+One chat window for **Cursor**, **Claude**, **Codex**, **ChatGPT** and **Ollama**, using your own subscriptions. No API keys.
 
-A clean, modern chat window: sidebar with your saved chats, a centered conversation with proper formatting (headings, lists, tables, code with a Copy button), and one composer where you pick the assistant, mode, model and folder. Switch assistants mid-conversation — each keeps its own part of the chat. You can also ask several of them the same thing and watch the answers arrive side by side.
+![Main chat window](docs/screenshots/chat.png)
+
+The main window, with a short conversation and saved chats in the sidebar.
+
+## What it does
+
+- **All your assistants in one place.** Cursor, Claude, Codex, ChatGPT and local models through Ollama share one window. Switch mid-conversation — each keeps its own part of the chat — or ask several of them the same thing and watch the answers arrive side by side.
+- **A normal chat.** Saved chats in the sidebar, replies with headings, lists, tables and code (with a Copy button), and one composer where you pick the assistant, mode, model and folder.
+- **Shared memory.** Save a fact once ("I use Unity 6 and C#", "answer in Russian") and every assistant gets it. Custom instructions live in the same place.
+- **Your Obsidian vault.** Notes related to your message are found and given to the assistant, memories can live in the vault, and chats can sync through it to your other computers.
+- **It checks for updates.** On startup, and about every 6 hours, Chatbox looks for a new version.
+- **Linux, macOS and Windows.** Its own window and icon on each.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/screenshots/assistants.png" alt="Assistant menu"><br>
+The assistant menu: Cursor, Claude, Codex, ChatGPT, and Ollama.
+</td>
+<td width="50%" valign="top">
+<img src="docs/screenshots/settings.png" alt="Settings"><br>
+Settings, with Sync through an Obsidian vault and the Updates section.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/screenshots/memory.png" alt="Memory"><br>
+Shared memories in Settings, including the option to keep them in Obsidian.
+</td>
+<td></td>
+</tr>
+</table>
 
 ## Download
 
@@ -21,7 +52,51 @@ On the first launch, open **Accounts** and sign in to Cursor, Claude, Codex and 
 - **macOS Gatekeeper.** If the build is unsigned, a double-click is blocked. Right-click `Chatbox.app`, choose **Open**, then Open again. Or run `xattr -dr com.apple.quarantine /path/to/Chatbox.app`.
 - **Windows SmartScreen.** If the build is unsigned, choose **More info**, then **Run anyway**.
 
-Signing is optional and happens only when the repository secrets in [SIGNING.md](SIGNING.md) are set. Without them the files are still published.
+---
+
+## Install
+
+```bash
+git clone https://github.com/Artemmie/chatbox.git
+cd chatbox
+./install.sh
+```
+
+Then open **Chatbox** from your app menu (Linux) or from Applications / Launchpad / Spotlight (macOS). On first start the **Accounts** screen opens: click **Install** and **Sign in** for the services you use.
+
+Options:
+
+| Command | What it does |
+|---|---|
+| `./install.sh` | Own window. Downloads PyQt6 + Qt WebEngine (~150 MB) into a private venv. |
+| `./install.sh --browser` | No extra downloads. Opens Chatbox in your web browser. |
+| `./install.sh --distrobox NAME` | Linux only: menu entry runs Chatbox inside a distrobox container. |
+
+Quick try without installing:
+
+```bash
+python3 chatbox.py        # opens http://127.0.0.1:8765 in your browser
+```
+
+Uninstall with `./uninstall.sh` (your sign-ins and the tools stay).
+
+## Requirements
+
+- Linux with a desktop (tested on KDE Plasma / Wayland), macOS (Apple silicon or Intel), or 64-bit Windows. The Mac install path is checked on GitHub's macOS runners (`install.sh --browser` plus a localhost smoke test). It has not been clicked through on a physical Mac. The Windows unit tests run on GitHub's Windows runners. The packaged apps are smoke-tested there by starting the server and reading the page.
+- Python 3.9+ (on macOS: `xcode-select --install`, or python.org / Homebrew)
+- A subscription for each assistant you want: Cursor account, Claude Pro or Max, ChatGPT (Plus/Pro, or free with limits)
+
+## The tools it uses
+
+| Assistant | Tool | Installed by the Accounts screen from |
+|---|---|---|
+| Cursor | `cursor-agent` | `https://cursor.com/install` |
+| Claude | `claude` (Claude Code) | `https://claude.ai/install.sh` |
+| Codex | `codex` | OpenAI's GitHub releases → `~/.local/bin/codex` |
+| ChatGPT | Sign in with ChatGPT (built into Chatbox, no separate tool) | Accounts → Continue with ChatGPT |
+| Ollama | Ollama's local server (no command-line tool needed) | Not installed by Chatbox — get it from `https://ollama.com/download` |
+
+If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled inside it (`ChatGPT.app` on macOS, or set `CHATBOX_CODEX=/path/to/codex` if it isn't found). That copy may be older and accept fewer models. That binary is only for **Codex**. **ChatGPT** chat does not use it.
 
 ## How it works
 
@@ -61,63 +136,6 @@ Usage counts toward each service's plan, exactly as if you used its own app. Rep
 - **Desktop app** – its own window and icon: a menu entry on Linux, `Chatbox.app` on macOS, `Chatbox.exe` on Windows. Downloads are above. A git clone can still use `./install.sh` on Linux and macOS.
 - **Updates** – on startup, and about every 6 hours, Chatbox checks for a new version. A git install is compared with that clone's tracked branch (`git fetch`, fast-forward only). **Update now** pulls only when that is a straight fast-forward, runs `install.sh` again in the same mode, and restarts. A downloaded app does not replace itself: **Download update** opens the matching file from the GitHub release (the `.dmg`, AppImage, or Windows setup). Chats, accounts and settings are not touched. Turn checks off, or turn on automatic install, in Settings. Automatic install only applies to a clean git clone. If the clone has local edits, or the histories have diverged, Chatbox stops and says so.
 
-## Requirements
-
-- Linux with a desktop (tested on KDE Plasma / Wayland), macOS (Apple silicon or Intel), or 64-bit Windows. The Mac install path is checked on GitHub's macOS runners (`install.sh --browser` plus a localhost smoke test). It has not been clicked through on a physical Mac. The Windows unit tests run on GitHub's Windows runners. The packaged apps are smoke-tested there by starting the server and reading the page.
-- Python 3.9+ (on macOS: `xcode-select --install`, or python.org / Homebrew)
-- A subscription for each assistant you want: Cursor account, Claude Pro or Max, ChatGPT (Plus/Pro, or free with limits)
-
-## Install
-
-```bash
-git clone https://github.com/Artemmie/chatbox.git
-cd chatbox
-./install.sh
-```
-
-Then open **Chatbox** from your app menu (Linux) or from Applications / Launchpad / Spotlight (macOS). On first start the **Accounts** screen opens: click **Install** and **Sign in** for the services you use.
-
-Options:
-
-| Command | What it does |
-|---|---|
-| `./install.sh` | Own window. Downloads PyQt6 + Qt WebEngine (~150 MB) into a private venv. |
-| `./install.sh --browser` | No extra downloads. Opens Chatbox in your web browser. |
-| `./install.sh --distrobox NAME` | Linux only: menu entry runs Chatbox inside a distrobox container. |
-
-Quick try without installing:
-
-```bash
-python3 chatbox.py        # opens http://127.0.0.1:8765 in your browser
-```
-
-Uninstall with `./uninstall.sh` (your sign-ins and the tools stay).
-
-## The tools it uses
-
-| Assistant | Tool | Installed by the Accounts screen from |
-|---|---|---|
-| Cursor | `cursor-agent` | `https://cursor.com/install` |
-| Claude | `claude` (Claude Code) | `https://claude.ai/install.sh` |
-| Codex | `codex` | OpenAI's GitHub releases → `~/.local/bin/codex` |
-| ChatGPT | Sign in with ChatGPT (built into Chatbox, no separate tool) | Accounts → Continue with ChatGPT |
-| Ollama | Ollama's local server (no command-line tool needed) | Not installed by Chatbox — get it from `https://ollama.com/download` |
-
-If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled inside it (`ChatGPT.app` on macOS, or set `CHATBOX_CODEX=/path/to/codex` if it isn't found). That copy may be older and accept fewer models. That binary is only for **Codex**. **ChatGPT** chat does not use it.
-
-## Privacy & security
-
-- The server listens on `127.0.0.1` only and rejects requests from other websites.
-- Chatbox stores no API keys. Cursor, Claude and Codex keep their own sign-in. ChatGPT's OAuth tokens (from Sign in with ChatGPT) are stored only on this computer, in `~/.local/share/chatbox/chatgpt/account.json`, mode `0600`. Sign out clears them and asks OpenAI to revoke the refresh token. You can also disconnect Chatbox in ChatGPT settings.
-- In **Agent** mode the assistant can change files in the chosen folder — use it on folders you trust. Files you attach for Cursor, Claude or Codex are copied into `<folder>/.chatbox-attach/` so the assistant can read them.
-- ChatGPT chat does not edit files. It can read text, images and PDFs you attach, and those bytes are sent to the Responses API with the message.
-- Ollama chats go only to the Ollama address you set (your own computer by default). If you point it at another computer, messages travel over your network unencrypted unless that address uses `https://`.
-- With Obsidian connected, notes that match your message are sent to the assistant you are chatting with (turn off in **Settings**). Chatbox only writes inside `Chatbox/` in your vault, plus `plans/` in the project folder you choose.
-- Usage statistics are stored locally in `~/.local/share/chatbox/usage.jsonl` (no message text, only counts). Clear them in **Usage**.
-- Chats are saved locally in `~/.local/share/chatbox/chats/` (one JSON file each), unless Sync is on, in which case the shared copy is Markdown in your vault. Delete them from the sidebar.
-- An update talks only to the git remote you already cloned from, or, when there is no clone, to GitHub's public tag list. It does not send chats, memories or sign-in tokens. It will not download and run a release archive.
-- Memories and custom instructions are stored locally in `~/.local/share/chatbox/memories.json` and `settings.json`. With Sync on, memories are also kept in the vault's `Memories.md`. Custom instructions stay on this computer. They are sent only to the assistant you are chatting with, at the start of a chat (or when they change). Turn this off in **Settings**.
-
 ## Files
 
 | File | Purpose |
@@ -142,13 +160,18 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 | `tests/` | `python3 -m unittest discover -s tests` (stdlib only; CLIs are mocked) |
 | `install.sh` / `uninstall.sh` | Per-user install, no root needed |
 
-## Tests
+## Privacy & security
 
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-GitHub Actions runs that on Ubuntu and macOS. The macOS job also runs `./install.sh --browser` and checks that `Chatbox.app` serves the page on `127.0.0.1`.
+- The server listens on `127.0.0.1` only and rejects requests from other websites.
+- Chatbox stores no API keys. Cursor, Claude and Codex keep their own sign-in. ChatGPT's OAuth tokens (from Sign in with ChatGPT) are stored only on this computer, in `~/.local/share/chatbox/chatgpt/account.json`, mode `0600`. Sign out clears them and asks OpenAI to revoke the refresh token. You can also disconnect Chatbox in ChatGPT settings.
+- In **Agent** mode the assistant can change files in the chosen folder — use it on folders you trust. Files you attach for Cursor, Claude or Codex are copied into `<folder>/.chatbox-attach/` so the assistant can read them.
+- ChatGPT chat does not edit files. It can read text, images and PDFs you attach, and those bytes are sent to the Responses API with the message.
+- Ollama chats go only to the Ollama address you set (your own computer by default). If you point it at another computer, messages travel over your network unencrypted unless that address uses `https://`.
+- With Obsidian connected, notes that match your message are sent to the assistant you are chatting with (turn off in **Settings**). Chatbox only writes inside `Chatbox/` in your vault, plus `plans/` in the project folder you choose.
+- Usage statistics are stored locally in `~/.local/share/chatbox/usage.jsonl` (no message text, only counts). Clear them in **Usage**.
+- Chats are saved locally in `~/.local/share/chatbox/chats/` (one JSON file each), unless Sync is on, in which case the shared copy is Markdown in your vault. Delete them from the sidebar.
+- An update talks only to the git remote you already cloned from, or, when there is no clone, to GitHub's public tag list. It does not send chats, memories or sign-in tokens. It will not download and run a release archive.
+- Memories and custom instructions are stored locally in `~/.local/share/chatbox/memories.json` and `settings.json`. With Sync on, memories are also kept in the vault's `Memories.md`. Custom instructions stay on this computer. They are sent only to the assistant you are chatting with, at the start of a chat (or when they change). Turn this off in **Settings**.
 
 ## Sync between two computers
 
@@ -172,24 +195,18 @@ Settings → Updates:
 
 **Update now** refuses to continue when the clone has uncommitted changes, and it refuses a merge that is not a fast-forward. Nothing in `~/.local/share/chatbox` besides the program files is removed: chats, `settings.json` and `chatgpt/account.json` stay.
 
+## Signing
+
+Signing is optional and happens only when the repository secrets in [SIGNING.md](SIGNING.md) are set. Without them the files are still published.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+GitHub Actions runs that on Ubuntu and macOS. The macOS job also runs `./install.sh --browser` and checks that `Chatbox.app` serves the page on `127.0.0.1`.
+
 ## License
 
 MIT
-
-## Screenshots
-
-![Main chat window](docs/screenshots/chat.png)
-
-The main window, with a short conversation and saved chats in the sidebar.
-
-![Assistant menu](docs/screenshots/assistants.png)
-
-The assistant menu: Cursor, Claude, Codex, ChatGPT, and Ollama.
-
-![Settings](docs/screenshots/settings.png)
-
-Settings, with Sync through an Obsidian vault and the Updates section.
-
-![Memory](docs/screenshots/memory.png)
-
-Shared memories in Settings, including the option to keep them in Obsidian.
