@@ -195,6 +195,8 @@ Use this when the same Obsidian vault is already synced between the machines (Ob
 2. Leave the folder under **Advanced** as it is unless you want a different folder inside the vault. Changing it moves chats that are already saved. The originals in `~/.local/share/chatbox/chats/` are not deleted.
 3. Wait for the vault to finish syncing, then open Chatbox on the other computer with the same vault. The sidebar picks up new and updated notes within a few seconds. You do not need to restart it.
 
+**Deleting a chat** removes its note (a copy goes to the vault's `.chatbox-backup/`) and its local copy, and adds its id to a hidden list in the Chatbox hub note (`%% chatbox:deleted %%`). The other computer then won't export its own old copy of that chat again. If the chat saved memories, Chatbox lists them and asks whether to delete them too. Memories saved before this version aren't linked to a chat, so they stay; delete those in Settings → Memory.
+
 Sign-ins are not in that folder. Install and sign in to Cursor, Claude, Codex and ChatGPT on each computer. Attached file bytes stay on the computer where you attached them; the note only records the file name.
 
 ## Updates

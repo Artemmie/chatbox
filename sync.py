@@ -483,9 +483,11 @@ def _memory_bullet(item):
         mid = hashlib.sha1(item["text"].encode()).hexdigest()[:12]
     source = item.get("source") or ""
     created = item.get("created") or ""
+    chat = item.get("chat") or ""
+    chat = f"chat:{chat}" if CHAT_ID.match(str(chat)) else ""
     extra = ""
-    if source or created:
-        extra = " <!--" + " ".join(part for part in (source, created) if part) + "-->"
+    if source or created or chat:
+        extra = " <!--" + " ".join(part for part in (source, created, chat) if part) + "-->"
     text = str(item["text"]).replace("\n", " ")
     return f"- `{mid}` {text}{extra}"
 
@@ -547,7 +549,7 @@ def parse_memories(text):
             project = "" if title.casefold() == "general" else title
             continue
         matched = re.match(r"^\s*[-*]\s+`([a-f0-9]{12})`\s+(.+?)\s*$", line)
-        source, created = "", ""
+        source, created, chat = "", "", ""
         if matched:
             mid, rest = matched.group(1), matched.group(2)
         else:
@@ -559,6 +561,10 @@ def parse_memories(text):
         comment = re.search(r"<!--([^>]*)-->\s*$", rest)
         if comment:
             bits = comment.group(1).split()
+            links = [b for b in bits if b.startswith("chat:")]
+            bits = [b for b in bits if not b.startswith("chat:")]
+            if links and CHAT_ID.match(links[0][5:]):
+                chat = links[0][5:]
             if bits:
                 source = bits[0]
             if len(bits) > 1:
@@ -567,8 +573,11 @@ def parse_memories(text):
         if not rest or mid in seen:
             continue
         seen.add(mid)
-        items.append({"id": mid, "text": rest, "source": source or "obsidian",
-                      "created": created, "project": project})
+        item = {"id": mid, "text": rest, "source": source or "obsidian",
+                "created": created, "project": project}
+        if chat:
+            item["chat"] = chat
+        items.append(item)
     return items
 
 
@@ -581,12 +590,21 @@ def memories_exist(root):
 
 
 def read_memories(root):
+    """Read memories and note which version we saw.
+
+    write_memories replaces the file only when it is still the version last read or
+    written here. Otherwise (it changed in between) it merges, so nothing is lost.
+    """
     path = memories_path(root)
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return parse_memories(handle.read())
-    except OSError:
-        return []
+    lib = library(root)
+    with lib.lock:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            return []
+        lib.memory_hash = _hash(text)
+        return parse_memories(text)
 
 
 def _sigs(items):
@@ -862,6 +880,7 @@ class Library:
             self.by_id.pop(cid, None)
             self.base.pop(cid, None)
             self.seen_files.pop(os.path.abspath(path), None)
+            remember_deleted(self.root, cid)
             _update_root_note(self.root)
             self._refresh_hubs("", project)
 
@@ -1221,6 +1240,55 @@ def delete_chat(root, cid, vault_path=None):
     library(root, vault_path).delete(cid)
 
 
+# Deleted chat ids, kept in the root note (synced with the vault) inside an Obsidian
+# comment, so another computer's old local copy of a chat is not exported again.
+DELETED_BEGIN = "%% chatbox:deleted %%"
+DELETED_END = "%% /chatbox:deleted %%"
+_DELETED = re.compile(r"%%\s*chatbox:deleted\s*%%(.*?)%%\s*/chatbox:deleted\s*%%[ \t]*\n?", re.DOTALL)
+_DELETED_ID = re.compile(r"(?m)^\s*-?\s*([a-f0-9]{12})\s*$")
+
+
+def _deleted_in(text):
+    out = set()
+    for block in _DELETED.finditer(text or ""):
+        out.update(_DELETED_ID.findall(block.group(1)))
+    return out
+
+
+def deleted_ids(root):
+    """Ids of chats deleted on any computer that shares this sync folder."""
+    try:
+        with open(os.path.join(root, ROOT_NOTE), encoding="utf-8") as handle:
+            return _deleted_in(handle.read())
+    except OSError:
+        return set()
+
+
+def remember_deleted(root, cid):
+    if not root or not CHAT_ID.match(cid or ""):
+        return
+    note = os.path.join(root, ROOT_NOTE)
+    try:
+        with open(note, encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        text = ""
+    except OSError:
+        return
+    ids = _deleted_in(text)
+    if cid in ids:
+        return
+    ids.add(cid)
+    block = (DELETED_BEGIN + "\nChats deleted in Chatbox, so no computer adds them back. Leave this list alone.\n"
+             + "\n".join(sorted(ids)) + "\n" + DELETED_END + "\n")
+    text = _DELETED.sub("", text).rstrip("\n")
+    text = (text + "\n\n" if text.strip() else "# Chatbox\n\n") + block
+    try:
+        _atomic_write(note, text)
+    except OSError:
+        pass
+
+
 LEGACY_SYNC_FOLDERS = {"", "Chatbox", "Projects/Chatbox"}
 
 
@@ -1323,7 +1391,7 @@ def backfill_local(store):
         found = find_chat_notes(vault_path)
     except OSError:
         found = {}
-    known = set(found)
+    known = set(found) | deleted_ids(root)  # never bring back a chat deleted anywhere
     copied = 0
     chats_dir = os.path.join(store.dir, "chats")
     try:
