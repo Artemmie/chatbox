@@ -132,6 +132,49 @@ class ReleaseAssetTests(unittest.TestCase):
         self.assertTrue(found["download"])
         self.assertTrue(found["url"].endswith("/releases/download/v1.2.0/Chatbox-Linux-x86_64.AppImage"))
 
+    def test_app_version_comes_from_version_or_the_bundle(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with open(os.path.join(tmp, "VERSION"), "w", encoding="utf-8") as handle:
+            handle.write("1.1.1\n")
+        with open(os.path.join(tmp, "version.txt"), "w", encoding="utf-8") as handle:
+            handle.write("v9.8.7\n")
+        original = update.runtime.source_root
+        self.addCleanup(setattr, update.runtime, "source_root", original)
+        update.runtime.source_root = lambda: tmp
+        had_frozen = hasattr(sys, "frozen")
+        old_frozen = getattr(sys, "frozen", None)
+
+        def restore():
+            if had_frozen:
+                sys.frozen = old_frozen
+            elif hasattr(sys, "frozen"):
+                delattr(sys, "frozen")
+
+        self.addCleanup(restore)
+        if hasattr(sys, "frozen"):
+            delattr(sys, "frozen")
+        self.assertEqual(update.app_version(), "1.1.1")
+        self.assertEqual(update.version_label(), "v1.1.1")
+        self.assertEqual(update.window_title(), "Chatbox v1.1.1")
+        info = update.version_info()
+        self.assertEqual(info["version"], "v1.1.1")
+        self.assertEqual(info["url"], "https://github.com/Artemmie/chatbox/releases/tag/v1.1.1")
+        sys.frozen = True
+        self.assertEqual(update.app_version(), "9.8.7")
+        self.assertEqual(update.window_title(), "Chatbox v9.8.7")
+        self.assertEqual(update.window_title(""), "Chatbox")
+        with open(os.path.join(os.path.dirname(__file__), "..", "app.py"), encoding="utf-8") as handle:
+            self.assertIn("window_title()", handle.read())
+        empty = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, empty, True)
+        update.runtime.source_root = lambda: empty
+        if hasattr(sys, "frozen"):
+            delattr(sys, "frozen")
+        self.assertEqual(update.app_version(), "")
+        self.assertEqual(update.window_title(), "Chatbox")
+        self.assertEqual(update.version_info()["url"], update.RELEASE_PAGE)
+
     def test_same_version_is_not_an_update(self):
         found = update.check_release("1.2.0", opener=lambda url: json.dumps({"tag_name": "v1.2.0"}),
                                      system="Windows")

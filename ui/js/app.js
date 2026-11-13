@@ -682,7 +682,25 @@ addEventListener('resize',()=>{if($('#usage').open)renderUsage();});
 // ===== start =====
 CHAT=newChatState();setEmpty();paint();
 const h=new Date().getHours();$('#greet').textContent=h<5?'Up late? What can I help with?':h<12?'Good morning. What can I help with?':h<18?'Good afternoon. What can I help with?':'Good evening. What can I help with?';
-fetch('/api/status').then(r=>r.json()).then(s=>{S.home=s.home;paint();loadModels();});
+function showVersion(s){
+  const label=s&&s.version||'';
+  const url=(s&&(s.version_url||s.url))||'';
+  document.querySelectorAll('a.appver').forEach(a=>{
+    a.hidden=!label;
+    a.textContent=label;
+    if(url)a.dataset.href=url;
+    a.title=label?('Open the '+label+' release'):'';
+  });
+  const line=$('#aboutline');if(line)line.hidden=!label;
+  if(label)document.title='Chatbox '+label;
+}
+document.addEventListener('click',e=>{
+  const a=e.target.closest('a.appver');
+  if(!a||a.hidden||!a.dataset.href)return;
+  e.preventDefault();
+  post('/api/open',{url:a.dataset.href});
+});
+fetch('/api/status').then(r=>r.json()).then(s=>{S.home=s.home;showVersion(s);paint();loadModels();});
 fetch('/api/settings').then(r=>r.json()).then(renderObsidian);
 fetch('/api/chats').then(r=>r.json()).then(renderChatList);
 async function refreshChats(){
