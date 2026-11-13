@@ -1360,8 +1360,11 @@ def backfill_local(store):
         except (OSError, ValueError):
             continue
         keep = library(root, vault_path).by_id.get(cid, {}).get("path")
+        if not keep:
+            continue
+        keep_real = os.path.normcase(os.path.realpath(keep))
         for path in find_chat_notes(vault_path).get(cid, []):
-            if keep and os.path.abspath(path) == os.path.abspath(keep):
+            if os.path.normcase(os.path.realpath(path)) == keep_real:
                 continue
             try:
                 import vault as vaultmod

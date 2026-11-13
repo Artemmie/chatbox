@@ -74,6 +74,26 @@ class BackfillTests(unittest.TestCase):
                     matches.append(os.path.join(dirpath, name))
         self.assertEqual(len(matches), 1)
 
+    def test_rehome_through_a_symlinked_vault(self):
+        box, _data = isolate()
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, True)
+        real = os.path.join(parent, "real")
+        link = os.path.join(parent, "link")
+        os.makedirs(real)
+        os.symlink(real, link)
+        box.MEMORY.connect_vault(link)
+        box.MEMORY.update_settings({"sync_chats": True, "sync_folder": "Notes"})
+        sync._libraries.clear()
+        old = sync.root_for(box.MEMORY)
+        sync.save_chat(old, {"id": "eee555eee555", "title": "Linked", "backend": "claude",
+                             "items": [{"r": "you", "t": "through the link"}]})
+        box.MEMORY.update_settings({"sync_folder": "Archive"})
+        sync._libraries.clear()
+        loaded = sync.load_chat(sync.root_for(box.MEMORY), "eee555eee555", vault_path=link)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["items"][0]["t"], "through the link")
+
     def test_old_sync_folder_is_rehomed_without_a_second_copy(self):
         box, data = isolate()
         parent = tempfile.mkdtemp()
