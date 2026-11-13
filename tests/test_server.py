@@ -65,7 +65,7 @@ class ServerTests(unittest.TestCase):
                     "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Partial"}}}), flush=True)
                 time.sleep(30)
                 sys.exit(0)
-            msg = sys.argv[-1]
+            msg = " ".join(sys.argv)
             text = "saw-file" if ".chatbox-attach" in msg else "Hello from Claude"
             print(json.dumps({"type": "system", "subtype": "init", "session_id": "sess1"}), flush=True)
             print(json.dumps({"type": "stream_event", "session_id": "sess1",

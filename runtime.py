@@ -29,7 +29,8 @@ def default_data_dir(system=None, environ=None, home=None):
     if system == "nt":
         base = environ.get("LOCALAPPDATA") or str(Path(home) / "AppData" / "Local")
         return str(Path(base) / "Chatbox")
-    return str(Path(home) / ".local" / "share" / "chatbox")
+    # Always slash-separated, including when this branch is unit-tested on Windows.
+    return str(home).replace("\\", "/").rstrip("/") + "/.local/share/chatbox"
 
 
 def windows_tool_dirs(environ=None, home=None):
