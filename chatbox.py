@@ -26,6 +26,7 @@ import chatgpt
 import memory
 import ollama
 import streaming
+import runtime
 import sync as syncmod
 import update as updatemod
 import usage as usagemod
@@ -35,41 +36,35 @@ HOME = os.path.expanduser("~")
 TIMEOUT = streaming.TOTAL_TIMEOUT  # seconds per reply; override with CHATBOX_TIMEOUT
 
 
-DATA_DIR = os.environ.get("CHATBOX_DATA", os.path.join(HOME, ".local/share/chatbox"))
-HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = runtime.default_data_dir()
+HERE = runtime.source_root()
 CURRENT_PORT = None
 chatgpt.init(DATA_DIR, accounts.open_url)
 
 # Apps opened from the macOS Finder (or some Linux menus) get a short PATH, so add the
 # usual places the tools are installed to. The assistants' child processes inherit it.
 _extra = [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+if os.name == "nt":
+    _extra = runtime.windows_tool_dirs() + _extra
 _path = os.environ.get("PATH", "").split(os.pathsep)
 os.environ["PATH"] = os.pathsep.join(_path + [d for d in _extra if os.path.isdir(d) and d not in _path])
 
 # Codex also ships inside the ChatGPT desktop app. A standalone `codex` on PATH wins;
 # otherwise use the app's copy from one of these places (or set CHATBOX_CODEX).
-CODEX_APP_CANDIDATES = [
-    os.environ.get("CHATBOX_CODEX", ""),
-    # macOS app bundles (ChatGPT.app replaced the older Codex.app)
-    "/Applications/ChatGPT.app/Contents/Resources/codex",
-    os.path.join(HOME, "Applications/ChatGPT.app/Contents/Resources/codex"),
-    "/Applications/Codex.app/Contents/Resources/codex",
-    os.path.join(HOME, "Applications/Codex.app/Contents/Resources/codex"),
-    # Linux packages and older layouts
-    os.path.join(HOME, "Applications/chatgpt/usr/lib/chatgpt/resources/codex"),
-    os.path.join(HOME, "Applications/ChatGPT/resources/codex"),
-    "/opt/ChatGPT/resources/codex",
-    "/opt/chatgpt/resources/codex",
-    "/usr/lib/chatgpt/resources/codex",
-]
-CODEX_APP_PATH = next((p for p in CODEX_APP_CANDIDATES if p and os.access(p, os.X_OK)), None)
+CODEX_APP_CANDIDATES = runtime.codex_app_candidates(HOME)
+CODEX_APP_PATH = next((p for p in CODEX_APP_CANDIDATES if runtime.executable(p)), None)
 # This Codex version rejects the newest models with a ChatGPT login, so "Auto" uses this one.
 CODEX_DEFAULT_MODEL = "gpt-5.6-terra"
 
 
 def find(cmd):
-    path = shutil.which(cmd) or (os.path.join(HOME, ".local/bin", cmd)
-                                 if os.path.exists(os.path.join(HOME, ".local/bin", cmd)) else None)
+    path = shutil.which(cmd)
+    if not path and os.name == "nt":
+        path = runtime.find_in_dirs(cmd, runtime.windows_tool_dirs(), (".cmd", ".exe", ".bat", ""))
+    if not path:
+        local = os.path.join(HOME, ".local/bin", cmd)
+        if os.path.exists(local):
+            path = local
     if not path and cmd == "codex" and CODEX_APP_PATH:
         path = CODEX_APP_PATH
     return path
@@ -897,7 +892,7 @@ class Handler(BaseHTTPRequestHandler):
         self._stream_ndjson(chat_stream(req))
 
 
-UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+UI_DIR = os.path.join(runtime.source_root(), "ui")
 _UI_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
              ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
 

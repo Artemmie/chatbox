@@ -7,6 +7,8 @@ force-pushes or merges, and leaves chats, accounts and settings where they are.
 """
 import json
 import os
+import platform
+import sys
 import re
 import shutil
 import subprocess
@@ -15,6 +17,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+
+import runtime
 
 REPO = "Artemmie/chatbox"
 TAGS_URL = f"https://api.github.com/repos/{REPO}/tags"
@@ -29,7 +33,60 @@ _started = False
 _no_hooks = None
 _ctx = {}
 STATE = {"enabled": True, "available": False, "can_apply": False, "checking": False,
-         "current": "", "latest": "", "message": "", "url": "", "kind": "", "checked_at": 0}
+         "current": "", "latest": "", "message": "", "url": "", "kind": "", "download": False,
+         "checked_at": 0}
+
+
+def asset_name(system=None, machine=None):
+    """The release file for this operating system. Opening it downloads the update."""
+    system = system or platform.system()
+    machine = (machine or platform.machine()).lower()
+    if system == "Windows":
+        return "Chatbox-Windows-x64-setup.exe"
+    if system == "Darwin":
+        if machine in ("arm64", "aarch64"):
+            return "Chatbox-macOS-arm64.dmg"
+        return "Chatbox-macOS-arm64.dmg"
+    return "Chatbox-Linux-x86_64.AppImage"
+
+
+def release_asset_url(tag, filename):
+    tag = tag if str(tag).startswith("v") else "v" + str(tag)
+    return f"https://github.com/{REPO}/releases/download/{tag}/{filename}"
+
+
+def version_parts(text):
+    text = str(text or "").strip().lstrip("vV")
+    if not text:
+        return None
+    nums = []
+    for piece in text.split("."):
+        digits = ""
+        for ch in piece:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if digits == "" and not nums:
+            return None
+        nums.append(int(digits or 0))
+    return tuple(nums) if nums else None
+
+
+def version_is_newer(remote, local):
+    left, right = version_parts(remote), version_parts(local)
+    if left is None or right is None:
+        return bool(remote) and str(remote).lstrip("vV") != str(local).lstrip("vV")
+    return left > right
+
+
+def bundled_version():
+    path = os.path.join(runtime.source_root(), "version.txt")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
 
 
 class UpdateError(Exception):
@@ -241,6 +298,36 @@ def check_github(local_commit, opener=None):
     return result
 
 
+def check_release(local_version, opener=None, system=None, machine=None):
+    """A packaged build compares its version with the latest GitHub release and links the matching file."""
+    result = {"kind": "github", "available": False, "can_apply": False, "download": False,
+              "current": local_version or "", "latest": "", "message": "", "url": RELEASE_PAGE}
+    try:
+        release = _fetch_json(RELEASES_URL, opener)
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError, TimeoutError):
+        result["message"] = "Could not check GitHub for a new version."
+        return result
+    if not isinstance(release, dict):
+        result["message"] = "Could not check GitHub for a new version."
+        return result
+    tag = release.get("tag_name") if isinstance(release.get("tag_name"), str) else ""
+    page = release.get("html_url")
+    if isinstance(page, str) and page.startswith("https://github.com/"):
+        result["url"] = page
+    if not tag or not version_is_newer(tag, local_version):
+        result["latest"] = tag
+        return result
+    filename = asset_name(system, machine)
+    result["available"] = True
+    result["download"] = True
+    result["can_apply"] = False
+    result["latest"] = tag
+    result["url"] = release_asset_url(tag, filename)
+    result["message"] = ("A newer Chatbox is published. Download it and replace this copy yourself. "
+                         "Chats and sign-ins stay on this computer.")
+    return result
+
+
 def check(data_dir, here, fetch=True, opener=None):
     source, info = source_of(data_dir, here)
     if source:
@@ -250,12 +337,16 @@ def check(data_dir, here, fetch=True, opener=None):
             return {"kind": "git", "available": False, "can_apply": False, "current": "", "latest": "",
                     "message": f"Could not check the clone for an update. {exc}", "url": ""}
         return found
+    version = bundled_version()
+    if getattr(sys, "frozen", False) or version:
+        return check_release(version, opener=opener)
     return check_github(info.get("commit") or "", opener=opener)
 
 
 def _public(result):
     """Status for the browser. The clone path stays on this computer."""
-    keys = ("enabled", "available", "can_apply", "checking", "current", "latest", "message", "url", "kind")
+    keys = ("enabled", "available", "can_apply", "checking", "current", "latest", "message", "url",
+            "kind", "download")
     out = {key: result.get(key, STATE.get(key)) for key in keys}
     out["checked_at"] = result.get("checked_at", 0)
     return out
@@ -264,7 +355,7 @@ def _public(result):
 def _install_script(source):
     root = os.path.realpath(source)
     script = os.path.realpath(os.path.join(root, "install.sh"))
-    if script != os.path.join(root, "install.sh") or not os.path.isfile(script):
+    if os.path.normcase(script) != os.path.normcase(os.path.join(root, "install.sh")) or not os.path.isfile(script):
         raise UpdateError("install.sh is not in the Chatbox folder.")
     return script
 
@@ -276,13 +367,13 @@ def run_install(source, info, data_dir):
     box = (info or {}).get("distrobox") or ""
     if box and not _BOX_NAME.match(box):
         raise UpdateError("The distrobox name recorded at install is not usable.")
-    cmd = ["bash", script]
+    cmd = [runtime.bash_exe(), script]
     if mode == "browser":
         cmd.append("--browser")
     if box:
         cmd.extend(["--distrobox", box])
     env = os.environ.copy()
-    env["CHATBOX_DATA"] = data_dir
+    env["CHATBOX_DATA"] = str(data_dir).replace("\\", "/")
     for key in list(env):
         if "TOKEN" in key.upper() or "SECRET" in key.upper() or key.upper().endswith("_KEY"):
             env.pop(key, None)

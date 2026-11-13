@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Chatbox
+GenericName=AI Chat
+Comment=Chat with Cursor, Claude, Codex or ChatGPT
+Exec=Chatbox
+Icon=chatbox
+Terminal=false
+Categories=Utility;

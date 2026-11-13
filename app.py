@@ -9,7 +9,8 @@ import sys
 import threading
 from http.server import ThreadingHTTPServer
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import runtime
+HERE = runtime.source_root()
 sys.path.insert(0, HERE)
 import chatbox  # noqa: E402
 

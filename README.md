@@ -1,8 +1,27 @@
 # Chatbox
 
-One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux and macOS — using the subscriptions you already pay for. No API keys. Plus your own local models through **Ollama**.
+One chat window for **Cursor**, **Claude**, **Codex** and **ChatGPT** on Linux, macOS and Windows — using the subscriptions you already pay for. No API keys. Plus your own local models through **Ollama**.
 
 A clean, modern chat window: sidebar with your saved chats, a centered conversation with proper formatting (headings, lists, tables, code with a Copy button), and one composer where you pick the assistant, mode, model and folder. Switch assistants mid-conversation — each keeps its own part of the chat. You can also ask several of them the same thing and watch the answers arrive side by side.
+
+## Download
+
+The latest builds are on the [releases page](https://github.com/Artemmie/chatbox/releases/latest). A tag `v*` builds them. Until the first tag is published, those links 404.
+
+| System | Download |
+|---|---|
+| Linux x86_64 | [AppImage](https://github.com/Artemmie/chatbox/releases/latest/download/Chatbox-Linux-x86_64.AppImage) · [tar.gz](https://github.com/Artemmie/chatbox/releases/latest/download/Chatbox-Linux-x86_64.tar.gz) |
+| macOS Apple silicon | [disk image](https://github.com/Artemmie/chatbox/releases/latest/download/Chatbox-macOS-arm64.dmg) · [zip](https://github.com/Artemmie/chatbox/releases/latest/download/Chatbox-macOS-arm64.zip) |
+| Windows 64-bit | [setup](https://github.com/Artemmie/chatbox/releases/latest/download/Chatbox-Windows-x64-setup.exe) · [zip](https://github.com/Artemmie/chatbox/releases/latest/download/Chatbox-Windows-x64.zip) |
+
+Checksums are `SHA256SUMS` on the same release. `./install.sh` is still there if you would rather run from a git clone (Linux and macOS). Intel Macs are not in the disk image; use `./install.sh` on those.
+
+On the first launch, open **Accounts** and sign in to Cursor, Claude, Codex and ChatGPT. Each tool keeps its own sign-in. Chatbox does not see the password.
+
+- **macOS Gatekeeper.** If the build is unsigned, a double-click is blocked. Right-click `Chatbox.app`, choose **Open**, then Open again. Or run `xattr -dr com.apple.quarantine /path/to/Chatbox.app`.
+- **Windows SmartScreen.** If the build is unsigned, choose **More info**, then **Run anyway**.
+
+Signing is optional and happens only when the repository secrets in [SIGNING.md](SIGNING.md) are set. Without them the files are still published.
 
 ## How it works
 
@@ -39,12 +58,12 @@ Usage counts toward each service's plan, exactly as if you used its own app. Rep
 - **Accounts screen** – see what's connected and **Install / Sign in / Sign out** each service without a terminal. Sign-in happens in your browser; Chatbox never sees your password.
 - **Local models (Ollama)** – every model you've pulled or built with Ollama (`ollama pull qwen3:8b`, or your own from a Modelfile) shows up in the Model menu. *Auto* uses the one you downloaded or changed most recently. Ask and Plan, no Agent mode. Ollama doesn't remember conversations, so Chatbox keeps each one in `~/.local/share/chatbox/ollama/` and sends the history with every message. Text files are pasted into the message; images are sent only when the model reports vision. The server address (default `http://localhost:11434`, or another computer on your network) is set in Accounts → Ollama.
 - **ChatGPT, separate from Codex** – Accounts → **Continue with ChatGPT** is OpenAI's sign-in for open-source apps on this computer. It uses your ChatGPT Plus or Pro plan (no API key) and chats through the public Responses API, with nothing stored on OpenAI's side (`store: false`). It is a plain chat: Ask and Plan, not Agent. Codex remains the coding agent and has its own sign-in. There is no official ChatGPT app you can drive as a general chat CLI without an API key; this sign-in is the supported way to use the plan itself. Chatbox does not scrape the ChatGPT website or reuse browser cookies. The first approval sometimes returns a one-time code OpenAI will not exchange; Chatbox keeps that registration and opens the browser once more so you only confirm the account. If the consent page says a required permission is unavailable, or ChatGPT says this workspace cannot share its plan, Chatbox stops instead of asking again. Accounts then shows that plan use is off, with **Use Codex** and **Sign in again**. Closing the browser ends the attempt and changes nothing. Failures are written to `chatbox.log` without codes or tokens.
-- **Desktop app** – its own window and icon: a menu entry on Linux, `Chatbox.app` on macOS.
-- **Updates** – on startup, and about every 6 hours, Chatbox checks for a new version. A git install is compared with that clone's tracked branch (`git fetch`, fast-forward only). Any other install is compared with the public GitHub tags. **Update now** pulls only when that is a straight fast-forward, runs `install.sh` again in the same mode, and restarts. Chats, accounts and settings are not touched. Turn checks off, or turn on automatic install, in Settings. If the clone has local edits, or the histories have diverged, Chatbox stops and says so.
+- **Desktop app** – its own window and icon: a menu entry on Linux, `Chatbox.app` on macOS, `Chatbox.exe` on Windows. Downloads are above. A git clone can still use `./install.sh` on Linux and macOS.
+- **Updates** – on startup, and about every 6 hours, Chatbox checks for a new version. A git install is compared with that clone's tracked branch (`git fetch`, fast-forward only). **Update now** pulls only when that is a straight fast-forward, runs `install.sh` again in the same mode, and restarts. A downloaded app does not replace itself: **Download update** opens the matching file from the GitHub release (the `.dmg`, AppImage, or Windows setup). Chats, accounts and settings are not touched. Turn checks off, or turn on automatic install, in Settings. Automatic install only applies to a clean git clone. If the clone has local edits, or the histories have diverged, Chatbox stops and says so.
 
 ## Requirements
 
-- Linux with a desktop (tested on KDE Plasma / Wayland), or macOS (Apple silicon or Intel). The Mac install path is checked on GitHub's macOS runners (`install.sh --browser` plus a localhost smoke test). It has not been clicked through on a physical Mac.
+- Linux with a desktop (tested on KDE Plasma / Wayland), macOS (Apple silicon or Intel), or 64-bit Windows. The Mac install path is checked on GitHub's macOS runners (`install.sh --browser` plus a localhost smoke test). It has not been clicked through on a physical Mac. The Windows unit tests run on GitHub's Windows runners. The packaged apps are smoke-tested there by starting the server and reading the page.
 - Python 3.9+ (on macOS: `xcode-select --install`, or python.org / Homebrew)
 - A subscription for each assistant you want: Cursor account, Claude Pro or Max, ChatGPT (Plus/Pro, or free with limits)
 
@@ -114,7 +133,11 @@ If you have the ChatGPT desktop app, Chatbox can also use the `codex` bundled in
 | `ollama.py` | Ollama: model list, status, and chats with locally saved history |
 | `vault.py` | Obsidian vault: detection, memory note, note search, saving chats |
 | `sync.py` | Optional vault sync: Markdown chats and memories, conflict-safe |
-| `update.py` | Optional updates: fast-forward the clone you installed from, then re-run `install.sh` |
+| `update.py` | Optional updates: fast-forward a git clone, or link a packaged download |
+| `runtime.py` | Data folder, tool lookup, and process control, including Windows |
+| `launcher.py` | Packaged entry: a window, or `--no-browser` for the server only |
+| `packaging/` | PyInstaller build, optional signing, smoke check |
+| `SIGNING.md` | How to add the optional Apple and Windows signing secrets |
 | `app.py` | Desktop window (PyQt6 WebEngine) |
 | `tests/` | `python3 -m unittest discover -s tests` (stdlib only; CLIs are mocked) |
 | `install.sh` / `uninstall.sh` | Per-user install, no root needed |

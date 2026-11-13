@@ -132,7 +132,10 @@ class TokenTests(unittest.TestCase):
             "scopes": [chatgpt.PLAN_SCOPE], "id_token": "x",
         })
         mode = stat.S_IMODE(os.stat(svc.store.path).st_mode)
-        self.assertEqual(mode, 0o600)
+        if os.name != "nt":
+            self.assertEqual(mode, 0o600)
+        else:
+            self.assertTrue(os.path.isfile(svc.store.path))
         gen = svc.stream_turn("hello", None, "m", None, 30)
         try:
             while True:

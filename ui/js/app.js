@@ -605,7 +605,7 @@ async function refreshUpdate(){
   $('#updatetext').textContent='Update available';
   const btn=$('#updatebtn');
   btn.hidden=false;
-  btn.textContent=u.can_apply?'Update now':(u.url?'View release':'Update now');
+  btn.textContent=u.can_apply?'Update now':(u.download?'Download update':(u.url?'View release':'Update now'));
   $('#updatemsg').textContent=u.message||'';
   if(u.checking)setTimeout(refreshUpdate,3000);
 }
