@@ -1,8 +1,10 @@
 """Windows path and process rules, exercised on every operating system."""
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 import runtime
@@ -135,6 +137,91 @@ class ReleaseAssetTests(unittest.TestCase):
                                      system="Windows")
         self.assertFalse(found["available"])
 
+    def test_semver_orders_double_digits(self):
+        self.assertEqual(update.version_parts("v1.0.10"), (1, 0, 10))
+        self.assertTrue(update.version_is_newer("v1.0.10", "v1.0.9"))
+        self.assertTrue(update.version_is_newer("v1.0.10", "1.0.9"))
+        self.assertFalse(update.version_is_newer("v1.0.9", "v1.0.10"))
+        self.assertFalse(update.version_is_newer("v1.2.3", "1.2.3"))
+        self.assertFalse(update.version_is_newer("v1.0.0", "1.0"))
+        self.assertTrue(update.version_is_newer("v1.2.1", "v1.2"))
+        self.assertTrue(update.version_is_newer("v2.0.0", "v1.9.9"))
+        older = update.check_release("v1.0.10", opener=lambda url: json.dumps({"tag_name": "v1.0.9"}),
+                                     system="Linux", machine="x86_64")
+        self.assertFalse(older["available"])
+        newer = update.check_release("1.0.9", opener=lambda url: json.dumps({
+            "tag_name": "v1.0.10",
+            "html_url": "https://github.com/Artemmie/chatbox/releases/tag/v1.0.10"}),
+            system="Linux", machine="x86_64")
+        self.assertTrue(newer["available"])
+        self.assertEqual(newer["current"], "1.0.9")
+        self.assertEqual(newer["latest"], "v1.0.10")
+        self.assertTrue(newer["url"].endswith("/releases/download/v1.0.10/Chatbox-Linux-x86_64.AppImage"))
+
+    def test_frozen_app_reports_version_txt(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with open(os.path.join(tmp, "version.txt"), "w", encoding="utf-8") as handle:
+            handle.write("1.0.9\n")
+        data = os.path.join(tmp, "data")
+        here = os.path.join(tmp, "app")
+        os.makedirs(data)
+        os.makedirs(here)
+        had_frozen = hasattr(sys, "frozen")
+        old_frozen = getattr(sys, "frozen", None)
+        had_meipass = hasattr(sys, "_MEIPASS")
+        old_meipass = getattr(sys, "_MEIPASS", None)
+
+        def restore():
+            if had_frozen:
+                sys.frozen = old_frozen
+            elif hasattr(sys, "frozen"):
+                delattr(sys, "frozen")
+            if had_meipass:
+                sys._MEIPASS = old_meipass
+            elif hasattr(sys, "_MEIPASS"):
+                delattr(sys, "_MEIPASS")
+
+        self.addCleanup(restore)
+        sys.frozen = True
+        sys._MEIPASS = tmp
+
+        def opener(url):
+            self.assertTrue(url.endswith("/releases/latest"))
+            return json.dumps({"tag_name": "v1.0.10",
+                                "html_url": "https://github.com/Artemmie/chatbox/releases/tag/v1.0.10"})
+
+        found = update.check(data, here, opener=opener)
+        self.assertEqual(found["current"], "1.0.9")
+        self.assertEqual(found["latest"], "v1.0.10")
+        self.assertTrue(found["available"])
+        self.assertTrue(found["download"])
+        self.assertFalse(found["can_apply"])
+        self.assertIn("/releases/download/v1.0.10/", found["url"])
+
+    def test_packaged_version_follows_the_tag_or_version_file(self):
+        import importlib.util
+        path = os.path.join(os.path.dirname(__file__), "..", "packaging", "build.py")
+        spec = importlib.util.spec_from_file_location("pack_build_version", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        old = os.environ.pop("CHATBOX_VERSION", None)
+
+        def restore_env():
+            if old is None:
+                os.environ.pop("CHATBOX_VERSION", None)
+            else:
+                os.environ["CHATBOX_VERSION"] = old
+
+        self.addCleanup(restore_env)
+        self.assertEqual(mod.version(), "1.0.0")
+        os.environ["CHATBOX_VERSION"] = "v1.0.10"
+        self.assertEqual(mod.version(), "1.0.10")
+        version_file = mod.ROOT / "version.txt"
+        self.addCleanup(lambda: version_file.is_file() and version_file.unlink())
+        mod.write_version()
+        self.assertEqual(version_file.read_text(encoding="utf-8"), "1.0.10\n")
+
     def test_pyinstaller_data_paths_are_absolute(self):
         import importlib.util
         path = os.path.join(os.path.dirname(__file__), "..", "packaging", "build.py")
@@ -160,6 +247,7 @@ class ReleaseAssetTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", text)
         self.assertIn("pull_request", text)
         self.assertIn("refs/tags/v", text)
+        self.assertIn("--generate-notes", text)
         for name in ("MACOS_CERT_P12_BASE64", "MACOS_CERT_PASSWORD", "MACOS_SIGN_IDENTITY",
                      "APPLE_ID", "APPLE_TEAM_ID", "APPLE_APP_PASSWORD",
                      "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET",

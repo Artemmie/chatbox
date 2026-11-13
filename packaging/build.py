@@ -18,7 +18,20 @@ OUT = DIST / "artifacts"
 
 
 def version():
-    return os.environ.get("CHATBOX_VERSION", "0.0.0").strip() or "0.0.0"
+    """Version baked into the download.
+
+    The release workflow passes the tag as CHATBOX_VERSION. A local build uses
+    the VERSION file, which the tag commit updates to the same number.
+    """
+    text = os.environ.get("CHATBOX_VERSION", "").strip()
+    if not text:
+        try:
+            text = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        except OSError:
+            text = ""
+    if text[:1] in ("v", "V"):
+        text = text[1:].strip()
+    return text or "0.0.0"
 
 
 def write_version():

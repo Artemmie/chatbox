@@ -155,6 +155,8 @@ Usage counts toward each service's plan, exactly as if you used its own app. Rep
 | `runtime.py` | Data folder, tool lookup, and process control, including Windows |
 | `launcher.py` | Packaged entry: a window, or `--no-browser` for the server only |
 | `packaging/` | PyInstaller build, optional signing, smoke check |
+| `VERSION` | Released version (`MAJOR.MINOR.PATCH`). The packaged app is built with the same number |
+| `scripts/next_version.py` | Chooses the next version from commits since the latest tag |
 | `SIGNING.md` | How to add the optional Apple and Windows signing secrets |
 | `app.py` | Desktop window (PyQt6 WebEngine) |
 | `tests/` | `python3 -m unittest discover -s tests` (stdlib only; CLIs are mocked) |
@@ -198,6 +200,20 @@ Settings → Updates:
 ## Signing
 
 Signing is optional and happens only when the repository secrets in [SIGNING.md](SIGNING.md) are set. Without them the files are still published.
+
+## Releases
+
+A push to `main` cuts the next release. `scripts/next_version.py` starts from the latest `vX.Y.Z` tag (the number in `VERSION`) and reads the commits after it:
+
+| Commit or pull request title | Bump |
+|---|---|
+| Contains `BREAKING`, or the subject contains `!:` (`feat!: …`) | major (`1.2.3` → `2.0.0`) |
+| `feat:`, a title that starts with `Add`, or the words `new feature` | minor (`1.2.3` → `1.3.0`) |
+| Anything else (`fix:`, `docs:`, `chore:`, …) | patch (`1.2.3` → `1.2.4`) |
+
+The highest bump wins. A commit that only changes `*.md`, `docs/**`, or `.github/**` is left out. If every commit since the tag is one of those, or is the version bump itself, there is no release. The bump commit is authored by `github-actions[bot]` and includes `[skip ci]`, so it does not run the workflow again. It writes `VERSION` and tags `vX.Y.Z`. A tag pushed with the Actions token does not start other workflows, so the same job starts the release workflow on that tag (`gh workflow run release.yml --ref vX.Y.Z`). That run checks out the tag, builds the apps, and publishes the release. Release notes are the merged pull request titles since the previous tag.
+
+The packaged build reports the same version. `CHATBOX_VERSION` is the tag, `packaging/build.py` writes `version.txt` from that (or from `VERSION` for a local build), and the update check compares semantic versions: `v1.0.10` is newer than `v1.0.9`.
 
 ## Tests
 
