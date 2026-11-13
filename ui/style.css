@@ -230,6 +230,10 @@ main.is-empty .composer-wrap{padding-bottom:14vh}
 
 /* usage */
 dialog.wide{width:min(880px,calc(100vw - 32px))}
+dialog#ask{width:min(440px,calc(100vw - 32px))}
+#asktext{white-space:pre-wrap}
+#askbtns{justify-content:flex-end}
+#askinput{width:100%}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;padding:2px;gap:2px}
 .seg button{border:0;background:transparent;border-radius:8px;padding:4px 12px;font-size:13px;color:var(--muted);cursor:pointer}
 .seg button.on{background:var(--hover);color:var(--text);font-weight:500}
@@ -299,6 +303,8 @@ details.advanced[open]{display:flex;flex-direction:column;gap:8px}
 .notesstatus{font-size:13px;color:var(--ok)}
 .notesstatus.err{color:var(--err)}
 .notesstatus.warn,.notesstatus.muted{color:var(--muted)}
+.vaultmsg{font-size:13px;color:var(--ok);min-height:1.2em}
+.vaultmsg.err{color:var(--err)}
 
 @media (max-width:760px){
   aside{position:absolute;inset:0 auto 0 0;box-shadow:var(--shadow)}

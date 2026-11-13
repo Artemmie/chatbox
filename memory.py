@@ -51,6 +51,28 @@ REMEMBER = re.compile(r"^[ \t>*_-]*REMEMBER:\s*(.+?)\s*$", re.MULTILINE)
 NOTES_MODES = ("obsidian", "chatbox", "off")
 
 
+def _same_folder(left, right):
+    """True when two vault paths are the same folder, ignoring a trailing slash."""
+    if not (left or "").strip() or not (right or "").strip():
+        return False
+    try:
+        a = os.path.normpath(os.path.abspath(os.path.expanduser(left.strip())))
+        b = os.path.normpath(os.path.abspath(os.path.expanduser(right.strip())))
+    except (OSError, ValueError):
+        return False
+    return os.path.normcase(a) == os.path.normcase(b)
+
+
+def manual_save_visible(sync_chats, notes_mode, has_folder):
+    """Header Save button. Hidden while auto-sync is writing notes.
+
+    Shown only when auto-sync is off and a notes folder is in use.
+    """
+    if sync_chats:
+        return False
+    return notes_mode in ("obsidian", "chatbox") and bool(has_folder)
+
+
 def copy_notes(src, dest):
     """Copy Markdown from the Chatbox folder into a vault. Skip ids and paths already there."""
     import sync as syncmod
@@ -231,6 +253,44 @@ class Store:
             return {"line": line, "fallback": True}
         return {"line": "✓ Saving chats to " + self._notes_trail("Chatbox"), "fallback": False}
 
+    def notes_card(self, vault_info, installed):
+        """The one notes card. Chatbox mode is not an Obsidian connection."""
+        try:
+            mode = self.notes_mode()
+            settings = self.settings()
+        except Exception:
+            mode, settings = "off", {}
+        count = int((vault_info or {}).get("notes") or 0)
+        noun = "note" if count == 1 else "notes"
+        sync_on = bool(settings.get("sync_chats"))
+        show_save = manual_save_visible(sync_on, mode, vault_info is not None and mode != "off")
+        if mode == "chatbox":
+            return {"mode": "chatbox",
+                    "title": f"Notes: Inside Chatbox · {count} {noun}",
+                    "path": self.local_vault_dir(),
+                    "count": count,
+                    "open_folder": True,
+                    "open_obsidian": bool(installed),
+                    "disconnect": False,
+                    "show_save": show_save}
+        if mode == "obsidian":
+            path = os.path.expanduser((settings.get("vault_path") or "").strip())
+            connected = bool(path) and vaultmod.is_vault(path)
+            name = os.path.basename(os.path.abspath(path).rstrip("\\/")) if connected else ""
+            title = f"{name} · {count} {noun}" if connected else "Obsidian"
+            return {"mode": "obsidian",
+                    "title": title,
+                    "path": os.path.abspath(path) if connected else "",
+                    "count": count if connected else 0,
+                    "connected": connected,
+                    "open_folder": False,
+                    "open_obsidian": False,
+                    "disconnect": True,
+                    "show_save": show_save}
+        return {"mode": "off", "title": "Notes storage", "path": "", "count": 0,
+                "open_folder": False, "open_obsidian": False, "disconnect": False,
+                "show_save": False}
+
     def _notes_trail(self, head):
         try:
             folder = self.settings().get("sync_folder") or "Chatbox"
@@ -247,27 +307,40 @@ class Store:
         mode = mode if mode in ("obsidian", "chatbox", "off") else "off"
         previous = self.notes_mode()
         copied = 0
+        unchanged = False
+        vault_name = ""
         if mode == "obsidian":
             chosen = (path or "").strip()
             if chosen:
                 chosen = os.path.abspath(os.path.expanduser(chosen))
+                if os.path.lexists(chosen) and not os.path.isdir(chosen):
+                    raise ValueError("That path isn't a folder.")
                 if not vaultmod.is_vault(chosen):
                     raise ValueError("That folder doesn't exist.")
+                saved = (self.settings().get("vault_path") or "").strip()
+                unchanged = previous == "obsidian" and _same_folder(saved, chosen)
                 if copy and previous == "chatbox":
                     copied = copy_notes(self.local_vault_dir(), chosen)
                 self.update_settings({"notes_storage": "obsidian", "vault_path": chosen, "sync_chats": True})
+                vault_name = os.path.basename(chosen.rstrip("\\/")) or "Vault"
             else:
                 # Remember the choice. A missing vault_path falls back inside notes_dir.
                 saved = os.path.expanduser((self.settings().get("vault_path") or "").strip())
                 if copy and previous == "chatbox" and vaultmod.is_vault(saved):
                     copied = copy_notes(self.local_vault_dir(), os.path.abspath(saved))
                 self.update_settings({"notes_storage": "obsidian", "sync_chats": True})
+                if saved and vaultmod.is_vault(saved):
+                    vault_name = os.path.basename(os.path.abspath(saved).rstrip("\\/")) or "Vault"
         elif mode == "chatbox":
             os.makedirs(self.local_vault_dir(), exist_ok=True)
             self.update_settings({"notes_storage": "chatbox", "sync_chats": True})
         else:
             self.update_settings({"notes_storage": "off", "sync_chats": False})
-        return {"copied": copied, "mode": self.notes_mode()}
+        notice = ""
+        if mode == "obsidian" and vault_name:
+            notice = "Already using this vault" if unchanged else "Saved: notes go to " + vault_name
+        return {"copied": copied, "mode": self.notes_mode(), "unchanged": unchanged,
+                "vault_name": vault_name, "notice": notice}
 
     def _vault_memory(self):
         v = self.vault()

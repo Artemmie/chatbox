@@ -378,3 +378,22 @@ def open_url(url):
 def open_path(path):
     """Open a local file with the default app (e.g. a plan .md in Obsidian or a text editor)."""
     _launch(path)
+
+
+def obsidian_url(path):
+    """obsidian:// link that opens this folder as a vault. The path is local only."""
+    import urllib.parse
+    folder = os.path.abspath(os.path.expanduser(path or ""))
+    return "obsidian://open?path=" + urllib.parse.quote(folder)
+
+
+def open_in_obsidian(path):
+    """Open a notes folder in Obsidian. Does nothing useful when Obsidian is missing."""
+    import vault as vaultmod
+    folder = os.path.abspath(os.path.expanduser(path or ""))
+    if not os.path.isdir(folder):
+        raise ValueError("That folder doesn't exist.")
+    if not vaultmod.obsidian_installed():
+        raise ValueError("Obsidian is not installed.")
+    if not _launch(obsidian_url(folder)):
+        raise ValueError("Could not open Obsidian.")
