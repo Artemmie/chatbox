@@ -49,18 +49,31 @@ jobs:
           CHATBOX_DATA="$DATA" python3 "$D/chatbox.py" --no-browser --port 8765 >"$DATA/server.log" 2>&1 &
           PID=$!
           trap 'kill "$PID" 2>/dev/null || true' EXIT
-          ok=0
-          for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-            if curl -fsS "http://127.0.0.1:8765/" | grep -q "ui/js/app.js"; then
-              ok=1
+          # About 30s. A short loop raced the process on the macOS runner (connection
+          # refused once, then the step died). Poll /api/status, and never pipe curl
+          # into grep -q: under pipefail, grep closing the pipe makes curl exit 23.
+          ready=0
+          i=0
+          while [ "$i" -lt 60 ]; do
+            i=$((i + 1))
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "server exited before it was ready" >&2
+              cat "$DATA/server.log" >&2 || true
+              exit 1
+            fi
+            code="$(curl -sS --max-time 2 -o "$DATA/status.json" -w "%{http_code}" "http://127.0.0.1:8765/api/status" || true)"
+            if [ "$code" = "200" ] && grep -F -q '"home"' "$DATA/status.json"; then
+              ready=1
               break
             fi
-            sleep 0.4
+            sleep 0.5
           done
-          if [ "$ok" != 1 ]; then
-            echo "server did not answer" >&2
+          if [ "$ready" != 1 ]; then
+            echo "server did not answer /api/status" >&2
             cat "$DATA/server.log" >&2 || true
             exit 1
           fi
-          curl -fsS "http://127.0.0.1:8765/ui/style.css" | grep -q -- "--bg"
-          curl -fsS "http://127.0.0.1:8765/api/status" | grep -q "home"
+          curl -fsS --max-time 10 -o "$DATA/index.html" "http://127.0.0.1:8765/"
+          curl -fsS --max-time 10 -o "$DATA/style.css" "http://127.0.0.1:8765/ui/style.css"
+          grep -F -q "ui/js/app.js" "$DATA/index.html"
+          grep -F -q -- "--bg" "$DATA/style.css"
