@@ -239,7 +239,13 @@ class NoticeTests(unittest.TestCase):
         self.assertTrue(payload["obsidian_app"]["notice"])
         box.save_chat({"id": "abc123abc123", "title": "Kept", "backend": "claude",
                        "items": [{"r": "you", "t": "hi"}]})
-        self.assertTrue(os.path.isfile(os.path.join(data, "chats", "abc123abc123.json")))
+        loaded = box.load_chat("abc123abc123")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["title"], "Kept")
+        place = box.settings_payload()["notes"]
+        self.assertTrue(place["fallback"])
+        self.assertIn("doesn't exist", place["status"])
+        self.assertNotIn(os.path.join(data, "missing"), place["status"])
 
     def test_version_is_read_not_hardcoded(self):
         path = os.path.join(os.path.dirname(__file__), "..", "packaging", "build.py")

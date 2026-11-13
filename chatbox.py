@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import accounts
 import attachments
 import chatgpt
+import folderpick
 import memory
 import ollama
 import streaming
@@ -744,11 +745,19 @@ def settings_payload():
         installed = vaultmod.obsidian_installed()
     except Exception:
         installed = False
-    notice = vaultmod.connection_notice(settings.get("vault_path") or "", bool(v) and settings.get("notes_storage") != "chatbox", installed)
     mode = MEMORY.notes_mode()
+    vault_path = settings.get("vault_path") or ""
+    # Connected means the Obsidian folder itself, not the internal fallback.
+    obsidian_connected = mode == "obsidian" and vaultmod.is_vault(os.path.expanduser(vault_path))
+    notice = vaultmod.connection_notice(vault_path, obsidian_connected, installed)
+    try:
+        place = MEMORY.notes_status()
+    except Exception:
+        place = {"line": "", "fallback": False}
     notes = {"mode": mode, "local_path": MEMORY.local_vault_dir(),
              "installed": installed, "download": vaultmod.OBSIDIAN_DOWNLOAD,
-             "banner": mode == "chatbox" and not installed}
+             "banner": mode == "chatbox" and not installed,
+             "status": place.get("line") or "", "fallback": bool(place.get("fallback"))}
     return {"settings": settings, "memories": MEMORY.memories(), "path": where,
             "vault": v.info() if v else None, "detected": vaultmod.detect_vaults(),
             "sync": syncmod.describe(MEMORY), "projects": projects, "obsidian_app": notice,
@@ -931,11 +940,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
         if self.path == "/api/notes":
             try:
+                if req.get("action") == "open":
+                    folder = MEMORY.local_vault_dir()
+                    os.makedirs(folder, exist_ok=True)
+                    accounts.open_path(folder)
+                    return self._send(200, json.dumps({"ok": True, "path": folder, **settings_payload()}))
                 result = MEMORY.set_notes_storage(req.get("mode") or "off", req.get("path") or "",
                                                   copy=bool(req.get("copy")))
                 return self._send(200, json.dumps({**result, **settings_payload()}))
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
+        if self.path == "/api/pick-folder":
+            try:
+                initial = MEMORY.settings().get("vault_path") or ""
+            except Exception:
+                initial = ""
+            try:
+                result = folderpick.pick(initial)
+            except Exception as e:
+                result = {"path": "", "cancelled": False, "error": str(e)}
+            return self._send(200, json.dumps(result))
         if self.path == "/api/sync" and req.get("action") == "move":
             root = syncmod.root_for(MEMORY)
             if not root:
@@ -945,9 +969,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"error": "Turn on Sync in Settings first.",
                                                    **settings_payload()}))
             try:
-                moved = syncmod.backfill_local(MEMORY)
-                if not moved.get("copied") and not moved.get("moved"):
-                    moved = syncmod.move_existing(DATA_DIR, root)
+                moved = syncmod.relocate(MEMORY)
             except Exception as e:
                 return self._send(200, json.dumps({"error": str(e), **settings_payload()}))
             return self._send(200, json.dumps({**moved, **settings_payload()}))

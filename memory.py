@@ -162,27 +162,85 @@ class Store:
         self.update_settings({"notes_storage": "off"}, _prepare=False)
         return "off"
 
+    def notes_dir(self):
+        """Folder notes are written into, or None when notes are off.
+
+        Obsidian mode uses vault_path. Chatbox mode uses the internal folder.
+        Obsidian with no usable vault_path falls back to that same internal folder;
+        notes_status says so, instead of pretending the missing path is in use.
+        """
+        try:
+            settings = self.settings()
+        except Exception:
+            return None
+        mode = self.notes_mode()
+        if mode == "off":
+            return None
+        if mode == "chatbox":
+            return self.local_vault_dir()
+        path = os.path.expanduser((settings.get("vault_path") or "").strip())
+        if mode == "obsidian":
+            if vaultmod.is_vault(path):
+                return os.path.abspath(path)
+            return self.local_vault_dir()
+        if path and vaultmod.is_vault(path):
+            return os.path.abspath(path)
+        return None
+
     def vault(self):
         """The notes folder, or None. Off means no notes. Chatbox mode uses its own folder."""
         try:
             settings = self.settings()
         except Exception:
             return None
-        mode = self.notes_mode()
-        folder = settings.get("sync_folder") or "Chatbox"
-        if mode == "off":
+        path = self.notes_dir()
+        if not path:
             return None
-        if mode == "chatbox":
-            path = self.local_vault_dir()
+        # Only the internal folder is created. A missing Obsidian path is not.
+        if not os.path.isdir(path):
+            if os.path.abspath(path) != os.path.abspath(self.local_vault_dir()):
+                return None
             try:
                 os.makedirs(path, exist_ok=True)
             except OSError:
                 return None
-            return vaultmod.Vault(path, sync_folder=folder)
-        p = settings.get("vault_path") or ""
-        if not vaultmod.is_vault(p):
+        if not vaultmod.is_vault(path):
             return None
-        return vaultmod.Vault(p, sync_folder=folder)
+        folder = settings.get("sync_folder") or "Chatbox"
+        return vaultmod.Vault(path, sync_folder=folder)
+
+    def notes_status(self):
+        """One line for Settings. The vault is named by its folder, never by the full path."""
+        try:
+            mode = self.notes_mode()
+            settings = self.settings()
+        except Exception:
+            return {"line": "", "fallback": False}
+        if mode not in ("obsidian", "chatbox"):
+            return {"line": "Chats stay on this computer.", "fallback": False}
+        path = os.path.expanduser((settings.get("vault_path") or "").strip())
+        if mode == "obsidian" and vaultmod.is_vault(path):
+            name = os.path.basename(os.path.abspath(path).rstrip("\\/")) or "Vault"
+            return {"line": "✓ Saving chats to " + self._notes_trail(name), "fallback": False}
+        if mode == "obsidian":
+            where = self._notes_trail("Chatbox")
+            if path:
+                line = "The vault folder doesn't exist. Saving chats to " + where + "."
+            else:
+                line = "No vault chosen. Saving chats to " + where + "."
+            return {"line": line, "fallback": True}
+        return {"line": "✓ Saving chats to " + self._notes_trail("Chatbox"), "fallback": False}
+
+    def _notes_trail(self, head):
+        try:
+            folder = self.settings().get("sync_folder") or "Chatbox"
+        except Exception:
+            folder = "Chatbox"
+        parts = [head]
+        for part in str(folder).replace("\\", "/").split("/"):
+            if part and part not in (".", ".."):
+                parts.append(part)
+        return " › ".join(parts)
 
     def set_notes_storage(self, mode, path="", copy=False):
         """Switch notes storage. Copying from Chatbox into a vault skips notes already there."""
@@ -190,12 +248,20 @@ class Store:
         previous = self.notes_mode()
         copied = 0
         if mode == "obsidian":
-            path = os.path.abspath(os.path.expanduser(path or self.settings().get("vault_path") or ""))
-            if not vaultmod.is_vault(path):
-                raise ValueError("Choose a vault folder that already exists.")
-            if copy and previous == "chatbox":
-                copied = copy_notes(self.local_vault_dir(), path)
-            self.update_settings({"notes_storage": "obsidian", "vault_path": path, "sync_chats": True})
+            chosen = (path or "").strip()
+            if chosen:
+                chosen = os.path.abspath(os.path.expanduser(chosen))
+                if not vaultmod.is_vault(chosen):
+                    raise ValueError("That folder doesn't exist.")
+                if copy and previous == "chatbox":
+                    copied = copy_notes(self.local_vault_dir(), chosen)
+                self.update_settings({"notes_storage": "obsidian", "vault_path": chosen, "sync_chats": True})
+            else:
+                # Remember the choice. A missing vault_path falls back inside notes_dir.
+                saved = os.path.expanduser((self.settings().get("vault_path") or "").strip())
+                if copy and previous == "chatbox" and vaultmod.is_vault(saved):
+                    copied = copy_notes(self.local_vault_dir(), os.path.abspath(saved))
+                self.update_settings({"notes_storage": "obsidian", "sync_chats": True})
         elif mode == "chatbox":
             os.makedirs(self.local_vault_dir(), exist_ok=True)
             self.update_settings({"notes_storage": "chatbox", "sync_chats": True})
@@ -270,6 +336,7 @@ class Store:
     # ---- changes --------------------------------------------------------
     def update_settings(self, new, _prepare=True):
         requested_folder = None
+        folder_changed = False
         with self.lock:
             s = self.settings()
             for k, v in (new or {}).items():
@@ -280,11 +347,13 @@ class Store:
                     s[k] = str(v)
                 elif k == "sync_folder":
                     import sync as syncmod
+                    previous = s.get("sync_folder")
                     try:
                         s[k] = syncmod.clean_rel(v)
                     except ValueError:
                         s[k] = "Chatbox"
                     requested_folder = s[k]
+                    folder_changed = s[k] != previous
                 elif k == "ollama_url":
                     s[k] = str(v).strip()[:500]
                 elif k == "notes_storage":
@@ -297,6 +366,9 @@ class Store:
             try:
                 import sync as syncmod
                 syncmod.prepare_vault(self, requested_folder=requested_folder)
+                # Changing the folder rehomes chats. Running it again does not copy them twice.
+                if folder_changed:
+                    syncmod.relocate(self)
             except Exception:
                 pass
             s = self.settings()

@@ -1,13 +1,16 @@
 """Notes storage: Obsidian vault, Chatbox's own folder, or off."""
+import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 
+import folderpick
 import memory
 import vault
 
-from tests.support import isolate
+from tests.support import isolate, request, serve
 
 
 def _write(path, text):
@@ -92,13 +95,272 @@ class NotesStorageTests(unittest.TestCase):
         self.assertEqual(again, 0)
 
     def test_settings_page_lists_the_three_choices(self):
-        text = open(os.path.join(os.path.dirname(__file__), "..", "ui", "index.html"), encoding="utf-8").read()
-        self.assertLess(text.index("Use my Obsidian vault"), text.index("Keep notes inside Chatbox"))
-        self.assertLess(text.index("Keep notes inside Chatbox"), text.index("> Off<"))
+        root = os.path.join(os.path.dirname(__file__), "..", "ui")
+        text = open(os.path.join(root, "index.html"), encoding="utf-8").read()
+        self.assertLess(text.index("Obsidian vault"), text.index("Inside Chatbox"))
+        self.assertLess(text.index("Inside Chatbox"), text.index(">Off<"))
         self.assertIn("Recommended", text)
         self.assertIn("https://obsidian.md/download", text)
         self.assertIn("Open in Obsidian later", text)
-        self.assertIn("Choose vault folder", text)
+        self.assertIn("Change…", text)
+        self.assertIn('id="vaultpickpath"', text)
+        self.assertIn("No vault chosen", text)
+        self.assertIn("Advanced", text)
+        self.assertIn("Open folder", text)
+        script = open(os.path.join(root, "js", "app.js"), encoding="utf-8").read()
+        self.assertIn("$('#vaultpickpath').value=p.settings.vault_path||''", script)
+
+    def test_obsidian_mode_uses_vault_path_not_the_chatbox_folder(self):
+        import sync
+        box, data = isolate()
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, True)
+        vault_dir = os.path.join(parent, "Main vault")
+        os.makedirs(vault_dir)
+        box.MEMORY.update_settings({
+            "notes_storage": "obsidian",
+            "vault_path": vault_dir,
+            "sync_chats": True,
+            "sync_folder": "Projects/Chatbox",
+        })
+        root = sync.root_for(box.MEMORY)
+        self.assertEqual(os.path.realpath(root), os.path.realpath(os.path.join(vault_dir, "Projects", "Chatbox")))
+        internal = os.path.realpath(os.path.join(data, "vault"))
+        self.assertFalse(os.path.realpath(root).startswith(internal + os.sep) or os.path.realpath(root) == internal)
+        box.save_chat({"id": "abc123abc123", "title": "Shelter", "backend": "claude",
+                       "items": [{"r": "you", "t": "Where should the shelter go?"}]})
+        found = []
+        for dirpath, _dirs, files in os.walk(vault_dir):
+            if "Shelter.md" in files:
+                found.append(os.path.join(dirpath, "Shelter.md"))
+        self.assertEqual(len(found), 1)
+        self.assertFalse(os.path.isdir(os.path.join(data, "vault", "Projects")))
+        payload = box.settings_payload()
+        self.assertEqual(payload["settings"]["vault_path"], os.path.abspath(vault_dir))
+        self.assertIn("✓ Saving chats to Main vault › Projects › Chatbox", payload["notes"]["status"])
+        self.assertNotIn(vault_dir, payload["notes"]["status"])
+        self.assertFalse(payload["notes"]["fallback"])
+
+    def test_chatbox_mode_ignores_a_saved_vault_path(self):
+        import sync
+        box, data = isolate()
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, True)
+        vault_dir = os.path.join(parent, "Main vault")
+        os.makedirs(vault_dir)
+        box.MEMORY.update_settings({
+            "notes_storage": "chatbox",
+            "vault_path": vault_dir,
+            "sync_chats": True,
+            "sync_folder": "Projects/Chatbox",
+        })
+        root = sync.root_for(box.MEMORY)
+        internal = os.path.realpath(os.path.join(data, "vault"))
+        self.assertTrue(os.path.realpath(root).startswith(internal + os.sep) or os.path.realpath(root) == internal)
+        self.assertFalse(os.path.realpath(root).startswith(os.path.realpath(vault_dir)))
+        status = box.MEMORY.notes_status()["line"]
+        self.assertIn("✓ Saving chats to Chatbox › Projects › Chatbox", status)
+        self.assertNotIn("Main vault", status)
+        self.assertNotIn(vault_dir, status)
+
+    def test_obsidian_without_a_real_folder_falls_back_and_says_so(self):
+        import sync
+        box, data = isolate()
+        missing = os.path.join(data, "missing")
+        box.MEMORY.update_settings({
+            "notes_storage": "obsidian",
+            "vault_path": missing,
+            "sync_chats": True,
+            "sync_folder": "Projects/Chatbox",
+        })
+        root = sync.root_for(box.MEMORY)
+        internal = os.path.realpath(os.path.join(data, "vault"))
+        self.assertTrue(os.path.realpath(root).startswith(internal + os.sep))
+        place = box.settings_payload()["notes"]
+        self.assertTrue(place["fallback"])
+        self.assertIn("doesn't exist", place["status"])
+        self.assertIn("Chatbox › Projects › Chatbox", place["status"])
+        self.assertNotIn(missing, place["status"])
+        self.assertFalse(box.settings_payload()["obsidian_app"]["connected"])
+
+    def test_changing_the_sync_folder_moves_a_chat_once(self):
+        box, _data = isolate()
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, True)
+        vault_dir = os.path.join(parent, "Main vault")
+        os.makedirs(vault_dir)
+        box.MEMORY.update_settings({
+            "notes_storage": "obsidian",
+            "vault_path": vault_dir,
+            "sync_chats": True,
+            "sync_folder": "Notes",
+        })
+        box.save_chat({"id": "abc123abc123", "title": "Once", "backend": "claude",
+                       "items": [{"r": "you", "t": "hi"}]})
+        box.MEMORY.update_settings({"sync_folder": "Archive"})
+        box.MEMORY.update_settings({"sync_folder": "Archive"})
+        found = []
+        for dirpath, _dirs, files in os.walk(vault_dir):
+            if ".chatbox-backup" in dirpath.split(os.sep):
+                continue
+            if "Once.md" in files:
+                found.append(os.path.join(dirpath, "Once.md"))
+        self.assertEqual(len(found), 1)
+        self.assertIn(os.path.join("Archive", "Chats"), found[0])
+
+    def test_typed_path_that_is_missing_is_rejected(self):
+        box, data = isolate()
+        kept = os.path.join(data, "kept")
+        os.makedirs(kept)
+        box.MEMORY.set_notes_storage("obsidian", kept)
+        try:
+            box.MEMORY.set_notes_storage("obsidian", os.path.join(data, "nope"))
+        except ValueError as exc:
+            self.assertIn("doesn't exist", str(exc))
+        else:
+            self.fail("missing folder was accepted")
+        self.assertEqual(box.MEMORY.settings()["vault_path"], os.path.abspath(kept))
+
+
+class PickFolderTests(unittest.TestCase):
+    def setUp(self):
+        self.box, self.tmp = isolate()
+        self.srv = serve(self.box)
+        self._bridge = folderpick._bridge
+        folderpick.set_bridge(None)
+
+    def tearDown(self):
+        folderpick.set_bridge(self._bridge)
+        self.srv.shutdown()
+        self.srv.server_close()
+
+    def test_endpoint_returns_the_mocked_dialog_and_a_cancel(self):
+        seen = {}
+
+        def fake(initial="", timeout=None):
+            seen["initial"] = initial
+            seen["timeout"] = timeout
+            return {"path": os.path.join(self.tmp, "picked"), "cancelled": False}
+
+        saved = os.path.join(self.tmp, "Main vault")
+        self.box.MEMORY.update_settings({"vault_path": saved, "notes_storage": "obsidian"}, _prepare=False)
+        original = folderpick.pick
+        folderpick.pick = fake
+        try:
+            code, raw = request(self.srv, "/api/pick-folder", {})
+            self.assertEqual(code, 200)
+            body = json.loads(raw)
+            self.assertEqual(body["path"], os.path.join(self.tmp, "picked"))
+            self.assertFalse(body["cancelled"])
+            self.assertEqual(seen["initial"], saved)
+
+            def cancelled(initial="", timeout=None):
+                return {"path": "", "cancelled": True}
+
+            folderpick.pick = cancelled
+            code, raw = request(self.srv, "/api/pick-folder", {})
+            body = json.loads(raw)
+            self.assertTrue(body["cancelled"])
+            self.assertEqual(body["path"], "")
+        finally:
+            folderpick.pick = original
+
+    def test_bridge_is_preferred_and_a_timeout_is_reported(self):
+        seen = {}
+
+        def bridge(initial, timeout):
+            seen["initial"] = initial
+            seen["timeout"] = timeout
+            return {"path": "/from/qt", "cancelled": False}
+
+        folderpick.set_bridge(bridge)
+        result = folderpick.pick("/Users/art/Documents/Main vault")
+        self.assertEqual(result["path"], "/from/qt")
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(seen["initial"], "/Users/art/Documents/Main vault")
+        self.assertEqual(seen["timeout"], folderpick.PICK_TIMEOUT)
+
+        def boom(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired(cmd="zenity", timeout=1)
+
+        result = folderpick._from_argv(["zenity"], 1, run=boom)
+        self.assertIn("timed out", result["error"].lower())
+        self.assertFalse(result["cancelled"])
+
+    def test_linux_prefers_zenity_and_cancel_is_empty(self):
+        calls = []
+
+        def which(name):
+            return "/usr/bin/" + name if name == "zenity" else None
+
+        class Proc:
+            returncode = 1
+            stdout = ""
+            stderr = ""
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            return Proc()
+
+        result = folderpick._linux("/tmp", 5, which=which, run=run)
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(result["path"], "")
+        self.assertEqual(calls[0][0], "zenity")
+        self.assertIn("--directory", calls[0])
+
+        calls.clear()
+
+        def which_kde(name):
+            return "/usr/bin/kdialog" if name == "kdialog" else None
+
+        folderpick._linux("/tmp", 5, which=which_kde, run=run)
+        self.assertEqual(calls[0][0], "kdialog")
+        self.assertIn("--getexistingdirectory", calls[0])
+
+        start = self.tmp
+
+        class Cancel:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        osa = []
+
+        def osa_run(argv, **_kwargs):
+            osa.append(list(argv))
+            return Cancel()
+
+        result = folderpick._darwin(start, 5, run=osa_run)
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(len(osa), 1)
+        self.assertEqual(osa[0][0], "osascript")
+        self.assertIn(os.path.abspath(start), osa[0])
+
+        class Ok:
+            returncode = 0
+            stdout = "/home/me/Main vault\n"
+            stderr = ""
+
+        result = folderpick._linux("/tmp", 5, which=which, run=lambda argv, **_kwargs: Ok())
+        self.assertEqual(result["path"], "/home/me/Main vault")
+        self.assertFalse(result["cancelled"])
+
+    def test_save_endpoint_prefills_from_settings_and_rejects_a_missing_folder(self):
+        saved = os.path.join(self.tmp, "Main vault")
+        os.makedirs(saved)
+        self.box.MEMORY.update_settings({
+            "notes_storage": "obsidian", "vault_path": saved, "sync_chats": True,
+            "sync_folder": "Projects/Chatbox",
+        })
+        code, raw = request(self.srv, "/api/settings")
+        self.assertEqual(code, 200)
+        body = json.loads(raw)
+        self.assertEqual(body["settings"]["vault_path"], os.path.abspath(saved))
+        self.assertIn("Main vault › Projects › Chatbox", body["notes"]["status"])
+        code, raw = request(self.srv, "/api/notes", {"mode": "obsidian", "path": os.path.join(self.tmp, "nope")})
+        body = json.loads(raw)
+        self.assertIn("doesn't exist", body["error"])
+        self.assertEqual(body["settings"]["vault_path"], os.path.abspath(saved))
 
 
 if __name__ == "__main__":
