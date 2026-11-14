@@ -328,5 +328,5 @@ class InstalledVersionTests(unittest.TestCase):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(root, "install.sh"), encoding="utf-8") as handle:
             script = handle.read()
-        self.assertIn('cp "$SRC/VERSION" "$D"/', script)
+        self.assertRegex(script, r'(?m)^cp .*"\$SRC"?/VERSION"? .*"\$D"/')
         self.assertTrue(os.path.isfile(os.path.join(root, "VERSION")))

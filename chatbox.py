@@ -575,7 +575,7 @@ def _finish_result(req, result, notes, started):
                                        "reply" in result, time.time() - started, result.get("usage"))
     if result.get("reply") is not None:
         result["reply"], result["saved_memories"] = MEMORY.take_memories(
-            result["reply"], req.get("message", ""), notes)
+            result["reply"], req.get("message", ""), notes, chat_id=req.get("chat_id") or "")
         result["context_version"] = MEMORY.version()  # the assistant already knows what it saved
         result["notes_used"] = [{"path": n["path"], "title": n["title"]} for n in notes]
         if req.get("mode") == "plan" and result["reply"].strip():
@@ -758,10 +758,10 @@ def delete_chat(cid):
             syncmod.delete_chat(root, cid, vault_path=_vault_path())
         except Exception:
             return
-        return
+    # Also drop the local copy, or backfill would write the note again later.
     try:
         os.remove(_chat_path(cid))
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):
         pass
 
 
@@ -1092,7 +1092,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     act = req.get("action")
                     if act == "add":
-                        item = MEMORY.add(req.get("text", ""))
+                        item = MEMORY.add(req.get("text", ""), chat=req.get("chat_id") or "")
                         if item is None:
                             raise ValueError("That is already in memory.")
                     elif act == "edit":
@@ -1173,7 +1173,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if req.get("action") == "save":
                     save_chat(req.get("chat") or {})
+                elif req.get("action") == "memories":  # what deleting this chat could also delete
+                    return self._send(200, json.dumps({"memories": MEMORY.for_chat(req.get("id", ""))}))
                 elif req.get("action") == "delete":
+                    if req.get("memories"):
+                        mine = {m["id"] for m in MEMORY.for_chat(req.get("id", ""))}
+                        MEMORY.delete_many([m for m in req["memories"] if m in mine])
                     delete_chat(req.get("id", ""))
                 else:
                     raise ValueError("Unknown action")
