@@ -4,7 +4,7 @@ One chat window for **Cursor**, **Claude**, **Codex**, **ChatGPT** and **Ollama*
 
 ![Main chat window](docs/screenshots/chat.png)
 
-The main window, with a short conversation and saved chats in the sidebar.
+The main window: a short conversation, chats grouped by project in the sidebar, and the assistant, mode, folder and project pickers in the message box.
 
 ## What it does
 
@@ -23,15 +23,18 @@ The assistant menu: Cursor, Claude, Codex, ChatGPT, and Ollama.
 </td>
 <td width="50%" valign="top">
 <img src="docs/screenshots/settings.png" alt="Settings"><br>
-Settings, with Sync through an Obsidian vault and the Updates section.
+Settings → Notes: keep chats and memories in an Obsidian vault, inside Chatbox, or nowhere.
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 <img src="docs/screenshots/memory.png" alt="Memory"><br>
-Shared memories in Settings, including the option to keep them in Obsidian.
+Settings → Memory: facts every assistant gets, with switches for using and auto-saving them.
 </td>
-<td></td>
+<td width="50%" valign="top">
+<img src="docs/screenshots/accounts.png" alt="Accounts"><br>
+Accounts: one card per assistant, showing whether it is connected and the one thing to do next.
+</td>
 </tr>
 </table>
 

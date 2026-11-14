@@ -451,3 +451,4 @@ dialog#dbrowse{width:min(520px,calc(100vw - 32px))}
 #aboutline[hidden]{display:none}
 .set-ver{white-space:nowrap}
 .set-ver .appver{display:inline;padding:0}
+.set-ver .appver{font-size:inherit}
