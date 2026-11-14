@@ -189,6 +189,12 @@
           <p class="muted">What every assistant should know about you, or how it should reply. New chats use it.</p></div>
         <textarea class="field" id="instructions" rows="9" maxlength="4000" placeholder="e.g. Reply in Russian. Keep answers short. Explain code step by step."></textarea>
         <div class="row"><button class="btn" id="instsave">Save</button><span class="muted" id="instmsg" role="status" aria-live="polite"></span></div>
+        <div class="promptblock" id="promptblock">
+          <div class="pane-h"><h3>Chatbox prompt</h3>
+            <p class="muted">Sent with every message to Claude and Codex. Cursor, ChatGPT and Ollama have no system-prompt flag, so they get it only at the start of a chat, with your custom instructions.</p></div>
+          <textarea class="field" id="system_prompt" rows="6" maxlength="4000" placeholder="Leave this empty to send no Chatbox prompt."></textarea>
+          <div class="row"><button class="btn" id="promptsave">Save</button><button class="ghost" type="button" id="promptreset">Reset to default</button><span class="muted" id="promptmsg" role="status" aria-live="polite"></span></div>
+        </div>
       </section>
 
       <section class="pane" data-pane="updates" role="tabpanel" hidden>

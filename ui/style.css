@@ -289,7 +289,8 @@ dialog::backdrop{background:rgba(0,0,0,.4);backdrop-filter:blur(2px)}
 #memlist{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto}
 .mem{display:flex;gap:6px;align-items:center}.mem .field{flex:1;padding:5px 9px;font-size:14px}
 .mem .src{font-size:11px;color:var(--faint);white-space:nowrap}
-#instructions{width:100%;resize:vertical}
+#instructions,#system_prompt{width:100%;resize:vertical}
+.promptblock{display:flex;flex-direction:column;gap:12px;margin-top:8px;padding-top:16px;border-top:1px solid var(--line)}
 code.path{font:12px ui-monospace,monospace;color:var(--muted);word-break:break-all}
 .notecard{border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
 .notecard.on{border-color:var(--accent)}

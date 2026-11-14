@@ -964,6 +964,7 @@ function renderSettings(p){
   status.textContent=notes.status||'';
   status.className='notesstatus'+(notes.fallback?' warn':(mode==='off'?' muted':''));
   if(document.activeElement!==$('#instructions')){$('#instructions').value=p.settings.instructions||'';instSaved=$('#instructions').value;}
+  if(document.activeElement!==$('#system_prompt')){$('#system_prompt').value=p.settings.system_prompt||'';promptSaved=$('#system_prompt').value;}
   $('#auto_update').checked=p.settings.auto_update!==false;
   $('#auto_install_updates').checked=!!p.settings.auto_install_updates;
   $('#mempath').textContent=p.path;$('#memtotal').textContent=p.memories.length?p.memories.length+' saved':'';$('#memclear').disabled=!p.memories.length;
@@ -1126,7 +1127,12 @@ $('#disconnectnotes').onclick=async()=>{
   renderSettings(r);
   if($('#set').open) $('.set-panes').scrollTop=0;
 };
-let instSaved=null;
+let instSaved=null, promptSaved=null, promptChain=Promise.resolve();
+function queuePrompt(task){
+  const run=promptChain.then(task,task);
+  promptChain=run.then(()=>{},()=>{});
+  return run;
+}
 async function saveInstructions(){
   const v=$('#instructions').value;
   if(v===instSaved)return;
@@ -1136,6 +1142,24 @@ async function saveInstructions(){
 }
 $('#instsave').onclick=()=>{instSaved=null;saveInstructions();};
 $('#instructions').addEventListener('change',saveInstructions);
+function saveSystemPrompt(){
+  const v=$('#system_prompt').value;
+  if(v===promptSaved)return;
+  promptSaved=v;
+  return queuePrompt(async()=>{
+    await memAct({settings:{system_prompt:v}});
+    $('#promptmsg').textContent=v.trim()?'Saved.':'Saved — nothing will be sent.';
+    setTimeout(()=>{$('#promptmsg').textContent='';},3000);
+  });
+}
+$('#promptsave').onclick=()=>{promptSaved=null;saveSystemPrompt();};
+$('#system_prompt').addEventListener('change',saveSystemPrompt);
+// Queued after a blur-save, so Reset still replaces the text that was just edited.
+$('#promptreset').onclick=()=>queuePrompt(async()=>{
+  promptSaved=null;
+  const r=await memAct({settings:{system_prompt:null}});
+  if(r&&!r.error){$('#promptmsg').textContent='Reset to the default.';setTimeout(()=>{$('#promptmsg').textContent='';},3000);}
+});
 $('#memadd').onsubmit=async e=>{e.preventDefault();const t=$('#memtext').value.trim();if(!t)return;const r=await memAct({action:'add',text:t});if(!r.error)$('#memtext').value='';};
 $('#memlist').addEventListener('change',e=>{const row=e.target.closest('.mem');if(row)memAct({action:'edit',id:row.dataset.id,text:e.target.value});});
 $('#memlist').addEventListener('click',e=>{const row=e.target.closest('.mem');if(row&&e.target.closest('button'))memAct({action:'delete',id:row.dataset.id});});
