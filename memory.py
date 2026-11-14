@@ -33,10 +33,19 @@ was were will just also some any all one has had our out its let please tell use
 когда кто чем мне меня тебя есть быть был была были мой моя мои твой ваш наш
 этот эта эти того тому этой этом только тоже если
 """.split())
+# Sent with every Claude and Codex call. Other assistants have no system-prompt
+# flag, so Chatbox prepends this on the first message of a chat instead.
+# Original wording: not copied from any assistant's own hidden prompt.
+DEFAULT_SYSTEM_PROMPT = (
+    "You are replying inside Chatbox, a desktop chat app. "
+    "A chat here can be handed from one assistant to another, so answer clearly "
+    "in Markdown and make each reply stand on its own."
+)
 DEFAULTS = {
     "use_memory": True,     # send memories + instructions at the start of each chat
     "auto_memory": True,    # let assistants save new memories (REMEMBER: lines)
     "instructions": "",     # custom instructions for every assistant
+    "system_prompt": DEFAULT_SYSTEM_PROMPT,  # Chatbox prompt; "" means send nothing
     "vault_path": "",       # connected Obsidian vault ("" = none)
     "memory_in_vault": True,  # keep memories in the vault's Chatbox/Memories.md
     "vault_search": True,   # give the assistant notes related to each message
@@ -434,6 +443,9 @@ class Store:
                         s[k] = v
                 elif k == "instructions":
                     s[k] = str(v)[:4000]
+                elif k == "system_prompt":
+                    # None resets to the built-in prompt. "" clears it, so nothing is sent.
+                    s[k] = DEFAULT_SYSTEM_PROMPT if v is None else str(v)[:4000]
             self._save(self.settings_path, s)
         if _prepare and s.get("sync_chats"):
             try:
@@ -517,6 +529,10 @@ class Store:
         blob = json.dumps([s, [(m["text"], m.get("project") or "") for m in self.memories()],
                            project or ""], sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:10]
+
+    def system_prompt(self):
+        """The Chatbox prompt, or '' when the user cleared it. Not part of context()."""
+        return (self.settings().get("system_prompt") or "").strip()
 
     def context(self, project=""):
         """Text put before the user's message at the start of a chat ('' if nothing to send).

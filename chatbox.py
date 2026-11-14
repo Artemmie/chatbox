@@ -73,7 +73,64 @@ def find(cmd):
     return path
 
 
-def build_codex_command(message, session_id, mode, model):
+def _toml_basic(text):
+    """A TOML basic string. Codex parses the value of `-c key=value` as TOML."""
+    out = ['"']
+    for ch in text:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\b":
+            out.append("\\b")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\f":
+            out.append("\\f")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ord(ch) < 0x20:
+            out.append("\\u%04x" % ord(ch))
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _chatbox_prompt():
+    """Prompt text for this call, or '' when the user cleared it."""
+    try:
+        return MEMORY.system_prompt()
+    except Exception:
+        return ""
+
+
+# Claude and Codex take the prompt on every call. cursor-agent's documented
+# flags have no system-prompt option, so that assistant gets the text on the
+# first message only (see _prepare_message).
+_PROMPT_FLAG = {"claude", "codex"}
+
+
+def _with_system_prompt(cmd, backend, prompt):
+    """Add the per-call prompt flag. An empty prompt adds nothing."""
+    prompt = (prompt or "").strip()
+    if not prompt or backend not in _PROMPT_FLAG:
+        return cmd
+    if backend == "claude":
+        return cmd[:-1] + ["--append-system-prompt", prompt, cmd[-1]]
+    # `instructions` is ignored by Codex. `developer_instructions` is injected
+    # as a developer message, including on `exec resume`.
+    flag = "developer_instructions=" + _toml_basic(prompt)
+    try:
+        at = cmd.index("-c") + 2
+    except ValueError:
+        at = len(cmd) - 1
+    return cmd[:at] + ["-c", flag] + cmd[at:]
+
+
+def build_codex_command(message, session_id, mode, model, system_prompt=None):
     exe = find("codex")
     if not exe:
         raise RuntimeError("Codex is not installed.")
@@ -87,7 +144,9 @@ def build_codex_command(message, session_id, mode, model):
     if session_id:
         cmd.append(session_id)
     cmd.append(message)
-    return cmd
+    if system_prompt is None:
+        system_prompt = _chatbox_prompt()
+    return _with_system_prompt(cmd, "codex", system_prompt)
 
 
 def parse_codex(out):
@@ -98,14 +157,20 @@ def parse_codex(out):
     return parser.finish()
 
 
-def build_command(backend, message, session_id, mode, model, stream="full"):
+def build_command(backend, message, session_id, mode, model, stream="full", system_prompt=None):
     """Return the CLI command for one turn. 'ask' = read-only, 'agent' = can edit files/run commands.
 
     stream is 'full' (token deltas), 'basic' (one JSON event per message) or 'off'
     (a single JSON result). Codex already streams events with --json, so stream is ignored there.
+
+    system_prompt is the Chatbox prompt. None reads the saved setting. '' adds no flag.
+    Claude gets --append-system-prompt. Codex gets -c developer_instructions.
+    cursor-agent has no equivalent flag; the prompt is prepended to the first message.
     """
+    if system_prompt is None:
+        system_prompt = _chatbox_prompt()
     if backend == "codex":
-        return build_codex_command(message, session_id, mode, model)
+        return build_codex_command(message, session_id, mode, model, system_prompt)
     if backend == "cursor":
         exe = find("cursor-agent")
         if not exe:
@@ -138,7 +203,7 @@ def build_command(backend, message, session_id, mode, model, stream="full"):
     if session_id:
         cmd += ["--resume", session_id]
     cmd.append(message)
-    return cmd
+    return _with_system_prompt(cmd, backend, system_prompt)
 
 
 def json_usage(data):
@@ -526,6 +591,12 @@ def _prepare_message(req):
     version = MEMORY.version(project)
     fresh = not session_id or req.get("context_version") != version
     context = MEMORY.context(project) if (use and fresh) else ""
+    # Claude and Codex receive this as a flag on every call (build_command).
+    # Everyone else has no such flag, so it rides along with custom instructions:
+    # the first message of a session, and again only when that context changes.
+    prompt = _chatbox_prompt()
+    if prompt and fresh and req.get("backend") not in _PROMPT_FLAG:
+        context = "[Chatbox prompt]\n" + prompt + "\n[End of Chatbox prompt]\n\n" + context
     notes = []
     if v and use and settings["vault_search"]:
         if req.get("backend") in ("claude", "codex", "cursor"):
