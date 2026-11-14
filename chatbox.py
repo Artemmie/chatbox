@@ -892,11 +892,47 @@ def settings_payload():
             "notes": notes}
 
 
+def ui_build():
+    """A stamp that changes when the page's files or the version change on disk.
+
+    An update replaces those files under a window that is already open. The page
+    compares this with the stamp it loaded with and reloads itself when it differs.
+    """
+    newest, count = 0, 0
+    try:
+        for folder, _dirs, files in os.walk(UI_DIR):
+            for name in files:
+                try:
+                    newest = max(newest, int(os.stat(os.path.join(folder, name)).st_mtime_ns))
+                    count += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return "%s-%d-%d" % (updatemod.app_version() or "0", count, newest)
+
+
+FOCUS_HOOK = None  # set by the desktop window: brings it to the front
+
+
+def focus_window():
+    """Bring the desktop window forward. False in browser mode, where there is none."""
+    hook = FOCUS_HOOK
+    if hook is None:
+        return False
+    try:
+        hook()
+    except Exception:
+        return False
+    return True
+
+
 def status():
     info = updatemod.version_info()
     return {"cursor": bool(find("cursor-agent")), "claude": bool(find("claude")),
             "codex": bool(find("codex")), "chatgpt": bool(find("codex")), "home": HOME,
-            "version": info["version"], "version_url": info["url"]}
+            "version": info["version"], "version_url": info["url"], "build": ui_build(),
+            "app": "chatbox", "window": FOCUS_HOOK is not None}
 
 
 def _updates_busy():
@@ -1009,7 +1045,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(ACCOUNTS.status(fresh="fresh=1" in self.path)
                                               + [chatgpt.status(), ollama.status(ollama_url())]))
         if self.path == "/api/update":
-            return self._send(200, json.dumps(updatemod.snapshot()))
+            return self._send(200, json.dumps({**updatemod.snapshot(), "build": ui_build()}))
         self._send(404, '{"error":"not found"}')
 
     def do_POST(self):
@@ -1163,6 +1199,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"error": str(e)}))
         if self.path == "/api/cancel":
             return self._send(200, json.dumps({"ok": streaming.cancel(str(req.get("turn_id") or ""))}))
+        if self.path == "/api/focus":
+            return self._send(200, json.dumps({"ok": focus_window()}))
         if self.path == "/api/update":
             action = req.get("action") or "check"
             if action == "apply":

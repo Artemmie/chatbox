@@ -319,3 +319,14 @@ class GitHubUpdateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstalledVersionTests(unittest.TestCase):
+    def test_install_copies_the_version_file(self):
+        # An installed copy reads VERSION next to its own files. install.sh used to
+        # copy only *.py and ui/, so the sidebar and Settings showed no version.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "install.sh"), encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertRegex(script, r'(?m)^cp .*"\$SRC"?/VERSION"? .*"\$D"/')
+        self.assertTrue(os.path.isfile(os.path.join(root, "VERSION")))

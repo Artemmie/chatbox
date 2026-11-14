@@ -1327,9 +1327,25 @@ $('#acclist').addEventListener('click',async e=>{
   if(act==='dismiss'){for(const k in modelCache)delete modelCache[k];loadModels();}
   accJSON='';refreshAccounts(act==='dismiss');});
 function openAccounts(){if(!$('#acc').open)$('#acc').showModal();accJSON='';refreshAccounts(true);fetch('/api/settings').then(r=>r.json()).then(applyNotes);}
+// The files this page was loaded from. An update swaps them on disk under an open window.
+let BUILD='';
+function pageIdle(){return !S.busy&&!document.querySelector('dialog[open]')&&!$('#msg').value.trim()&&!(typeof FILES!=='undefined'&&FILES.length);}
+function noticeNewBuild(build){
+  if(!build)return false;
+  if(!BUILD){BUILD=build;return false;}
+  if(build===BUILD)return false;
+  if(pageIdle()){location.reload();return true;}
+  const bar=$('#updatebar');if(!bar)return true;
+  bar.hidden=false;
+  $('#updatetext').textContent='Chatbox was updated';
+  $('#updatemsg').textContent='Reload to see the new version. Your chats are saved.';
+  const btn=$('#updatebtn');btn.hidden=false;btn.textContent='Reload';btn.dataset.reload='1';
+  return true;
+}
 async function refreshUpdate(){
   let u;try{u=await fetch('/api/update').then(r=>r.json());}catch(e){return;}
   const bar=$('#updatebar');if(!bar)return;
+  if(noticeNewBuild(u.build))return;
   if(!u.available){bar.hidden=true;if(u.checking)setTimeout(refreshUpdate,3000);return;}
   bar.hidden=false;
   $('#updatetext').textContent='Update available';
@@ -1347,8 +1363,10 @@ async function applyUpdate(msg, btn){
   const r=await post('/api/update',{action:'apply'});
   if(r.error){if(msg) msg.textContent=r.error; if(btn) btn.disabled=false; return;}
   if(msg) msg.textContent=r.restarting?'Updated. Restarting…':(r.error||'');
+  // the server comes back with new files: look for them until the page reloads itself
+  if(r.restarting){const t=setInterval(refreshUpdate,2000);setTimeout(()=>clearInterval(t),90000);}
 }
-$('#updatebtn').onclick=()=>applyUpdate($('#updatemsg'), $('#updatebtn'));
+$('#updatebtn').onclick=()=>{if($('#updatebtn').dataset.reload){location.reload();return;}applyUpdate($('#updatemsg'), $('#updatebtn'));};
 $('#checknow').onclick=async()=>{
   const btn=$('#checknow'), msg=$('#checkmsg'), go=$('#setupdatenow');
   btn.disabled=true;
@@ -1455,25 +1473,29 @@ addEventListener('resize',()=>{if($('#usage').open)renderUsage();});
 // ===== start =====
 CHAT=newChatState();setEmpty();paint();
 const h=new Date().getHours();$('#greet').textContent=h<5?'Up late? What can I help with?':h<12?'Good morning. What can I help with?':h<18?'Good afternoon. What can I help with?':'Good evening. What can I help with?';
+let VERSION_URL='';
 function showVersion(s){
   const label=s&&s.version||'';
-  const url=(s&&(s.version_url||s.url))||'';
-  document.querySelectorAll('a.appver').forEach(a=>{
+  VERSION_URL=(s&&(s.version_url||s.url))||'';
+  document.querySelectorAll('.appver').forEach(a=>{
     a.hidden=!label;
     a.textContent=label;
-    if(url)a.dataset.href=url;
-    a.title=label?('Open the '+label+' release'):'';
+    // the label in the sidebar and in the Settings sidebar leads to Settings > Updates, never to a web page
+    a.title=label&&a.id!=='aboutver'?'Version and updates':'';
   });
   const line=$('#aboutline');if(line)line.hidden=!label;
+  for(const id of ['#setverline','#verbox']){const el=$(id);if(el)el.hidden=!label;}
+  const news=$('#whatsnew');if(news)news.hidden=!label||!VERSION_URL;
   if(label)document.title='Chatbox '+label;
 }
 document.addEventListener('click',e=>{
-  const a=e.target.closest('a.appver');
-  if(!a||a.hidden||!a.dataset.href)return;
+  if(e.target.closest('#whatsnew')){if(VERSION_URL)post('/api/open',{url:VERSION_URL});return;}
+  const a=e.target.closest('.appver');
+  if(!a||a.hidden||a.id==='aboutver')return;
   e.preventDefault();
-  post('/api/open',{url:a.dataset.href});
+  if($('#set').open)showSetTab('updates');else openSettings('updates');
 });
-fetch('/api/status').then(r=>r.json()).then(s=>{S.home=s.home;showVersion(s);paint();loadModels();});
+fetch('/api/status').then(r=>r.json()).then(s=>{S.home=s.home;if(s.build)BUILD=s.build;showVersion(s);paint();loadModels();});
 renderAuth();
 refreshAuth(false);
 setInterval(()=>refreshAuth(false),60000);

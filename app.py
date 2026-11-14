@@ -118,6 +118,29 @@ class FolderBridge(QObject):
             return dict(self._result)
 
 
+class Focus(QObject):
+    """Bring the window to the front when another launch asks for it.
+
+    The request arrives on a server thread, so it is passed to the GUI thread as a signal.
+    """
+
+    requested = pyqtSignal()
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+        self.requested.connect(self._show)
+
+    def _show(self):
+        w = self._window
+        if w.isMinimized():
+            w.showNormal()
+        w.show()
+        w.raise_()
+        w.activateWindow()
+        QApplication.alert(w)
+
+
 def start_server():
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", PORT), chatbox.Handler)
@@ -128,6 +151,9 @@ def start_server():
 
 
 def main():
+    if runtime.already_running(PORT):
+        print("Chatbox is already open. Brought that window to the front.")
+        return
     srv = start_server()
     chatbox.CURRENT_PORT = srv.server_address[1]
     chatbox.start_updates()
@@ -148,6 +174,7 @@ def main():
     view.load(QUrl(f"http://127.0.0.1:{srv.server_address[1]}/"))
     view.show()
     folderpick.set_bridge(FolderBridge(view).pick)
+    chatbox.FOCUS_HOOK = Focus(view).requested.emit
 
     code = app.exec()
     srv.shutdown()

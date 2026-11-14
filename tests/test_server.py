@@ -225,3 +225,92 @@ class ServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneWindowTests(unittest.TestCase):
+    """A second launch hands over to the first, and an open page notices new files."""
+
+    def setUp(self):
+        self.box, self.tmp = isolate()
+        self.srv = serve(self.box)
+        self.port = self.srv.server_address[1]
+        self._hook = self.box.FOCUS_HOOK
+
+    def tearDown(self):
+        self.box.FOCUS_HOOK = self._hook
+        self.srv.shutdown()
+        self.srv.server_close()
+
+    def test_second_launch_focuses_the_window_that_is_open(self):
+        import runtime
+        # browser mode has no window to bring forward, so a window may still start
+        self.box.FOCUS_HOOK = None
+        self.assertFalse(runtime.already_running(self.port))
+        code, raw = request(self.srv, "/api/focus", {})
+        self.assertEqual(json.loads(raw), {"ok": False})
+        seen = []
+        self.box.FOCUS_HOOK = lambda: seen.append(1)
+        code, raw = request(self.srv, "/api/status")
+        info = json.loads(raw)
+        self.assertEqual(info["app"], "chatbox")
+        self.assertTrue(info["window"])
+        self.assertTrue(runtime.already_running(self.port))
+        self.assertEqual(seen, [1])
+
+    def test_nothing_on_the_port_or_another_program_starts_normally(self):
+        import runtime
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import socket
+        import threading
+        free = socket.socket()
+        free.bind(("127.0.0.1", 0))
+        port = free.getsockname()[1]
+        free.close()
+        self.assertFalse(runtime.already_running(port, timeout=1))
+
+        class Other(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'{"hello": "world"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        other = ThreadingHTTPServer(("127.0.0.1", 0), Other)
+        threading.Thread(target=other.serve_forever, daemon=True).start()
+        try:
+            self.assertFalse(runtime.already_running(other.server_address[1], timeout=2))
+        finally:
+            other.shutdown()
+            other.server_close()
+
+    def test_build_stamp_changes_when_the_page_files_change(self):
+        ui = os.path.join(self.tmp, "ui")
+        os.makedirs(os.path.join(ui, "js"))
+        with open(os.path.join(ui, "index.html"), "w", encoding="utf-8") as handle:
+            handle.write("<p>one</p>")
+        original = self.box.UI_DIR
+        self.box.UI_DIR = ui
+        try:
+            first = self.box.ui_build()
+            self.assertEqual(first, self.box.ui_build())
+            code, raw = request(self.srv, "/api/update")
+            self.assertEqual(json.loads(raw)["build"], first)
+            code, raw = request(self.srv, "/api/status")
+            self.assertEqual(json.loads(raw)["build"], first)
+            path = os.path.join(ui, "js", "app.js")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("// new")
+            self.assertNotEqual(self.box.ui_build(), first)
+        finally:
+            self.box.UI_DIR = original
+        code, js = request(self.srv, "/ui/js/app.js")
+        self.assertIn(b"noticeNewBuild", js)
+        self.assertIn(b"location.reload()", js)
+        with open(os.path.join(os.path.dirname(__file__), "..", "app.py"), encoding="utf-8") as handle:
+            app = handle.read()
+        self.assertIn("runtime.already_running(PORT)", app)
+        self.assertIn("chatbox.FOCUS_HOOK", app)

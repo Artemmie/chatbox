@@ -154,6 +154,12 @@ def window_title(label=None):
     return "Chatbox " + label if label else "Chatbox"
 
 
+# Shown when the folder Chatbox was installed from is on a branch that is not on GitHub
+# (a local work branch, for example), so there is nothing to compare it with.
+NO_UPSTREAM = ("Chatbox can't check for updates: the folder it was installed from is on a "
+               "branch that isn't on GitHub. Switch that folder back to main, then check again.")
+
+
 class UpdateError(Exception):
     pass
 
@@ -286,7 +292,7 @@ def check_git(source, fetch=True):
     upstream = upstream_of(source)
     if not upstream:
         return {"kind": "git", "available": False, "can_apply": False, "current": head[:12],
-                "latest": head[:12], "message": "This clone has no tracked branch on origin.", "url": ""}
+                "latest": head[:12], "message": NO_UPSTREAM, "url": ""}
     if fetch:
         fetch_upstream(source, upstream)
     left, right = _counts(source, upstream)
